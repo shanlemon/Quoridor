@@ -3,9 +3,10 @@
 A cute, cozy take on the board game **Quoridor** — chibi animals racing across a garden,
 building picket fences to slow each other down. 2–4 players, hotseat, fully playable offline.
 
-> **Status:** Milestones **M1 (rules engine)** and **M2 (local hotseat client)** are complete.
-> The multiplayer server (M3) and Discord Activity integration (M4) come next — see
-> [GAME_PROMPT.md](GAME_PROMPT.md) for the full product spec.
+> **Status:** Milestones **M1 (rules engine)**, **M2 (local hotseat client)** and
+> **M3 (authoritative multiplayer server)** are complete, plus a bot AI ladder.
+> Discord Activity integration (M4) comes next — see [GAME_PROMPT.md](GAME_PROMPT.md)
+> for the full product spec.
 
 | 🐰 Mochi | 🐸 Pebble | 🐱 Biscuit | 🐧 Tofu |
 |---|---|---|---|
@@ -17,13 +18,25 @@ Requirements: Node 20+ and pnpm (`npm i -g pnpm`).
 
 ```bash
 pnpm install
-pnpm dev          # → http://localhost:5173
+pnpm dev          # client → http://localhost:5173, game server → :5174
 ```
 
-Pick 2, 3 or 4 players (hotseat — pass the mouse), optionally a turn timer, and start.
-Any seat can be handed to a **bot** in the "Who plays whom?" section — cycle each
-critter between 🧑 Human, 🤖 Easy, 🤖 Smart and 🤖 Genius. All-bot games work too
-(sit back and watch the garden sort itself out).
+**Local (hotseat):** pick 2, 3 or 4 players, optionally a turn timer, and start. Any
+seat can be handed to a **bot** in the "Who plays whom?" section — cycle each critter
+between 🧑 Human, 🤖 Easy, 🤖 Smart and 🤖 Genius. All-bot games work too.
+
+**Online (multiplayer):** switch to the 🌐 Online tab, pick a name, **Create a room**,
+and share the 4-letter code (click it to copy). Friends join from their own browser —
+on another machine, just open your LAN address. The host picks seats/timer/bot-fill
+and starts. The server is fully authoritative: every move is validated by the same
+engine, with `turnSeq` replay protection.
+
+- **Disconnects:** a dropped player's seat is held for 60 s (their card shows 📵);
+  then a bot takes over until they return — reopening the page reclaims the seat
+  automatically (session token in localStorage).
+- **Spectators:** anyone joining beyond the seat count (or mid-game) watches live.
+- **Bot fill:** the host can fill empty seats with server-side bots — 1 human vs
+  3 Geniuses works fine.
 
 ### Controls
 
@@ -53,9 +66,22 @@ pnpm playtest -- 4     # 4 players
 
 ```
 packages/
-  engine/   @quori/engine — pure TypeScript rules engine (zero DOM/Node deps)
-  client/   @quori/client — Vite + PixiJS hotseat client
+  engine/    @quori/engine   — pure TypeScript rules engine (zero DOM/Node deps)
+  protocol/  @quori/protocol — wire protocol; zod validation of all client messages
+  server/    @quori/server   — authoritative game server (rooms, ws, bots, reconnect)
+  client/    @quori/client   — Vite + PixiJS client (hotseat + online)
 ```
+
+## Deployment
+
+One container runs everything (server + built client on the same origin):
+
+```bash
+docker compose up --build     # → http://localhost:5174
+```
+
+Copy `.env.example` to `.env` for configuration. `DISCORD_CLIENT_ID/SECRET` are
+reserved for M4 (the `/api/token` OAuth exchange endpoint is already stubbed).
 
 ### Scripts
 
@@ -105,6 +131,9 @@ implementation across 2,000 random positions.
 3b. Start a 2p game with Pebble set to 🤖 — after your hop the status reads
    "Pebble is thinking… 🤖" and the bot replies on its own; your taps during its
    turn do nothing.
+3c. 🌐 Online: create a room in one browser window, join the code from a second
+   (private) window, start — moves appear on both boards; close the second window
+   and the first shows 📵 on that player; reopen it to reclaim the seat.
 4. March two pawns face to face → the cell *behind* the opponent glows; the jump lands.
 5. Finish a 2p race → confetti celebration, results with placements/fences used/duration,
    **Rematch** resets cleanly.
@@ -112,7 +141,10 @@ implementation across 2,000 random positions.
 
 ## Roadmap
 
-- **M3** — Colyseus-style authoritative server, rooms, reconnect (the client already
-  talks to its `GameController` via intents + events, mirroring the future protocol).
-- **M4** — Discord Embedded App SDK, `instanceId` rooms, avatars, activity proxy rules.
-- **M5/M6** — final art/audio pass, spectators, emotes, hardening.
+- ~~**M3** — authoritative server, rooms, reconnect~~ ✅ done.
+- **M4** — Discord Embedded App SDK: `ready()/authorize()/authenticate()` flow with
+  the `/api/token` exchange, `instanceId` as the room key (everyone in a voice
+  channel lands in the same lobby), Discord avatars/names instead of typed names,
+  `/.proxy/` URL mapping compliance. The protocol and server were shaped for this —
+  the room code simply becomes the instance id.
+- **M5/M6** — final art/audio pass, emote wheel, hardening.

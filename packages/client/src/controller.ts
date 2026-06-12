@@ -44,6 +44,7 @@ type Handler<T> = (e: T) => void;
  * events (same shape a future multiplayer server protocol will have).
  */
 export class GameController {
+  readonly kind = 'local' as const;
   state: GameState;
   readonly history: HistoryEntry[] = [];
   readonly startedAt = Date.now();
@@ -107,6 +108,25 @@ export class GameController {
 
   isBotTurn(): boolean {
     return this.state.status === 'playing' && this.isBot(this.state.current);
+  }
+
+  // --- shared controller surface (mirrored by NetworkController) ---
+
+  /** Hotseat: input is only locked while a bot is taking its turn. */
+  inputLocked(): boolean {
+    return this.isBotTurn();
+  }
+
+  lockKind(): 'bot' | 'remote' | null {
+    return this.isBotTurn() ? 'bot' : null;
+  }
+
+  currentActorName(): string | null {
+    return null; // local games label players by character
+  }
+
+  seatMeta(seat: number): { label: string | null; bot: boolean; connected: boolean; you: boolean } {
+    return { label: null, bot: this.isBot(seat), connected: true, you: false };
   }
 
   on<K extends keyof ControllerEvents>(ev: K, h: Handler<ControllerEvents[K]>): void {

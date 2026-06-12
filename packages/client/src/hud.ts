@@ -1,7 +1,7 @@
 import { rankPlayers } from '@quori/engine';
 import type { ActionError, GameState, WallCheck } from '@quori/engine';
 import { CHARACTER_META } from './characters';
-import type { GameController } from './controller';
+import type { PlayController } from './main';
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -11,16 +11,21 @@ function $(id: string): HTMLElement {
 
 const GOAL_ARROWS = { north: '⬆️', south: '⬇️', east: '➡️', west: '⬅️' } as const;
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
 /** All DOM chrome around the canvas: player cards, status, history, toasts, results. */
 export class Hud {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly coarse = window.matchMedia('(pointer: coarse)').matches;
 
-  renderPlayers(c: GameController, timerLeft: number | null): void {
+  renderPlayers(c: PlayController, timerLeft: number | null): void {
     const state = c.state;
     $('players-panel').innerHTML = state.players
       .map((p) => {
         const meta = CHARACTER_META[p.character];
+        const seatMeta = c.seatMeta(p.seat);
         const active = state.status === 'playing' && p.seat === state.current;
         const winner = state.winner === p.seat;
         const fences =
@@ -30,12 +35,23 @@ export class Hud {
           active && timerLeft !== null
             ? `<span class="timer-badge ${timerLeft <= 5 ? 'urgent' : ''}">⏱ ${timerLeft}s</span>`
             : '';
-        const bot = c.isBot(p.seat) ? ' 🤖' : '';
+        const badges = [
+          seatMeta.bot ? '🤖' : '',
+          seatMeta.you ? '<span class="you-chip">you</span>' : '',
+          !seatMeta.connected ? '📵' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const owner =
+          seatMeta.label && seatMeta.label !== meta.name
+            ? `<div class="goal-hint">${escapeHtml(seatMeta.label)}</div>`
+            : '';
         return `
         <div class="player-card ${active ? 'active' : ''} ${winner ? 'winner' : ''}" style="--pc:${meta.colorCss}">
           <div class="avatar" style="--pc:${meta.colorCss}40">${meta.emoji}</div>
           <div class="pinfo">
-            <div class="pname">${meta.name}${bot} <span class="goal-hint">${meta.icon}</span></div>
+            <div class="pname">${meta.name} ${badges} <span class="goal-hint">${meta.icon}</span></div>
+            ${owner}
             <div class="goal-hint">home: ${GOAL_ARROWS[p.goal]} ${p.goal}</div>
             <div class="fences">${fences}</div>
           </div>
@@ -45,7 +61,12 @@ export class Hud {
       .join('');
   }
 
-  updateStatus(state: GameState, mode: 'move' | 'wall', botThinking = false): void {
+  updateStatus(
+    state: GameState,
+    mode: 'move' | 'wall',
+    lock: 'bot' | 'remote' | null = null,
+    actorName: string | null = null,
+  ): void {
     const status = $('status-text');
     if (state.status === 'finished' && state.winner !== null) {
       const meta = CHARACTER_META[state.players[state.winner].character];
@@ -53,8 +74,12 @@ export class Hud {
       return;
     }
     const meta = CHARACTER_META[state.players[state.current].character];
-    if (botThinking) {
+    if (lock === 'bot') {
       status.textContent = `${meta.emoji} ${meta.name} is thinking… 🤖`;
+      return;
+    }
+    if (lock === 'remote') {
+      status.textContent = `${meta.emoji} Waiting for ${actorName ?? meta.name}… 🌐`;
       return;
     }
     if (mode === 'move') {
@@ -78,7 +103,7 @@ export class Hud {
     wallBtn.disabled = locked || me.wallsLeft === 0;
   }
 
-  renderHistory(c: GameController): void {
+  renderHistory(c: PlayController): void {
     const list = $('history-list');
     list.innerHTML = c.history
       .map((h, i) => {
@@ -131,7 +156,7 @@ export class Hud {
     return this.errorMessage(check.legal ? 'ILLEGAL_MOVE' : check.reason);
   }
 
-  showGameOver(c: GameController): void {
+  showGameOver(c: PlayController): void {
     const state = c.state;
     if (state.winner === null) return;
     const winMeta = CHARACTER_META[state.players[state.winner].character];

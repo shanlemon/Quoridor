@@ -1,13 +1,19 @@
 import './styles.css';
 import { CHARACTERS, getLegalWallSlots } from '@quori/engine';
-import type { BotLevel, PlayerCount } from '@quori/engine';
+import type { ActionError, BotLevel, PlayerCount } from '@quori/engine';
+import type { RoomConfig } from '@quori/protocol';
 import { BoardView } from './board-view';
 import type { BoardMode } from './board-view';
 import { CHARACTER_META } from './characters';
 import { GameController } from './controller';
+import type { NetworkController } from './net-controller';
+import { OnlineSession } from './online';
+import type { LobbyState } from './online';
 import { helpSeen, initHelp, showHelp } from './help';
 import { Hud } from './hud';
 import { sfx } from './sfx';
+
+export type PlayController = GameController | NetworkController;
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -16,26 +22,27 @@ function $(id: string): HTMLElement {
 }
 
 const hud = new Hud();
-let controller: GameController | null = null;
+let controller: PlayController | null = null;
 let board: BoardView | null = null;
 let mode: BoardMode = 'move';
 let timerLeft: number | null = null;
+let online: OnlineSession | null = null;
 
-// Setup choices
+// Local setup choices
 let playerCount: PlayerCount = 2;
 let timerSeconds = 0;
 const seatConfig: (BotLevel | null)[] = [null, null, null, null];
 
 /**
- * Each startGame() bumps the generation; queued continuations from a previous
- * game check it and bail, so a rematch mid-animation can never replay an old
+ * Each new game bumps the generation; queued continuations from a previous
+ * game check it and bail, so a restart mid-animation can never replay an old
  * celebration or overlay onto the new board.
  */
 let gen = 0;
 let starting = false;
 let pendingAnims = 0;
 
-// Serialize animations so a timer auto-move can't overlap a running hop.
+// Serialize animations so an auto/bot/remote move can't overlap a running hop.
 let queue: Promise<void> = Promise.resolve();
 function enqueue(myGen: number, fn: () => Promise<void>): void {
   pendingAnims++;
@@ -52,27 +59,24 @@ function enqueue(myGen: number, fn: () => Promise<void>): void {
 function refresh(): void {
   if (!controller || !board) return;
   const state = controller.state;
-  const botTurn = controller.isBotTurn();
-  hud.renderPlayers(controller, state.status === 'playing' && !botTurn ? timerLeft : null);
-  hud.updateStatus(state, mode, botTurn);
-  hud.updateModeBar(state, mode, botTurn);
+  const locked = controller.inputLocked();
+  hud.renderPlayers(controller, state.status === 'playing' && !locked ? timerLeft : null);
+  hud.updateStatus(state, mode, controller.lockKind(), controller.currentActorName());
+  hud.updateModeBar(state, mode, locked);
   hud.renderHistory(controller);
   board.setActiveSeat(state.status === 'playing' ? state.current : null);
-  const dots =
-    state.status === 'playing' && !botTurn && mode === 'move' ? controller.legalMoves() : [];
+  const dots = state.status === 'playing' && !locked && mode === 'move' ? controller.legalMoves() : [];
   board.setHighlights(dots, CHARACTER_META[state.players[state.current].character].color);
   maybeAutoPass();
 }
 
 /**
- * A player with no legal move AND no legal fence (rare, but reachable) would
- * soft-lock a timer-less game — there is no Pass button. Pass for them after a
- * short beat. If a full round of consecutive passes happens, everyone is stuck
- * and we stop (the position is unresolvable).
+ * Local games only (the server does this online): a player with no legal move
+ * AND no legal fence would soft-lock — pass for them after a short beat.
  */
 function maybeAutoPass(): void {
   const c = controller;
-  if (!c || c.state.status !== 'playing') return;
+  if (!c || c.kind !== 'local' || c.state.status !== 'playing') return;
   if (c.isBotTurn()) return; // bots pass on their own
   if (c.legalMoves().length > 0) return;
   if (getLegalWallSlots(c.state).length > 0) return;
@@ -94,9 +98,9 @@ function maybeAutoPass(): void {
 function setMode(next: BoardMode): void {
   if (!controller || !board) return;
   if (controller.state.status !== 'playing') return;
-  if (next === 'wall' && controller.isBotTurn()) {
+  if (next === 'wall' && controller.inputLocked()) {
     sfx.bonk();
-    hud.toast("It's not your turn! 🤖");
+    hud.toast("It's not your turn!");
     return;
   }
   if (next === 'wall' && controller.state.players[controller.state.current].wallsLeft === 0) {
@@ -110,7 +114,7 @@ function setMode(next: BoardMode): void {
   refresh();
 }
 
-function wireController(c: GameController): void {
+function wireController(c: PlayController): void {
   const myGen = gen;
 
   c.on('moved', ({ seat, from, to, auto }) => {
@@ -150,25 +154,24 @@ function wireController(c: GameController): void {
 
   c.on('turn', () => {
     if (gen !== myGen) return;
-    sfx.chime();
-    // After a wall, the new player may be in wall mode with 0 fences — bounce
-    // back. Bot turns also force move mode so no human ghost lingers.
+    // chime only when it's an actionable turn (yours, or any hotseat turn)
+    if (!c.inputLocked()) sfx.chime();
     if (
       mode === 'wall' &&
-      (c.isBotTurn() || c.state.players[c.state.current].wallsLeft === 0)
+      (c.inputLocked() || c.state.players[c.state.current].wallsLeft === 0)
     ) {
       mode = 'move';
       board?.setMode('move');
     }
+    if (c.kind === 'online') refresh();
   });
 
   c.on('timer', ({ secondsLeft }) => {
     if (gen !== myGen) return;
     timerLeft = secondsLeft;
-    // While a hop/fence animation is presenting the previous turn, don't flip
-    // the players panel to the next player yet — the post-animation refresh
-    // paints the new turn (and its countdown) consistently.
-    if (c.state.status === 'playing' && pendingAnims === 0) hud.renderPlayers(c, timerLeft);
+    if (c.state.status === 'playing' && pendingAnims === 0 && !c.inputLocked()) {
+      hud.renderPlayers(c, timerLeft);
+    }
   });
 
   c.on('finished', ({ winner }) => {
@@ -177,63 +180,77 @@ function wireController(c: GameController): void {
       mode = 'move';
       refresh();
       await board?.celebrateWin(winner);
-      // Don't stack the results dialog over an open setup dialog — the user
-      // has already moved on to configuring the next game.
+      // Don't stack the results dialog over an open setup dialog.
       if ($('setup-overlay').classList.contains('hidden')) hud.showGameOver(c);
     });
   });
+
+  if (c.kind === 'online') {
+    c.onSeatsChanged(() => {
+      if (gen !== myGen) return;
+      refresh();
+    });
+  }
 }
 
-async function startGame(): Promise<void> {
+/** Tear down the previous game and mount a board for the given controller. */
+async function mountGame(c: PlayController): Promise<void> {
+  gen++;
+  $('setup-overlay').classList.add('hidden');
+  $('gameover-overlay').classList.add('hidden');
+
+  board?.destroy();
+  board = null;
+  queue = Promise.resolve();
+  controller = c;
+  timerLeft = c.timerSeconds > 0 ? c.timerSeconds : null;
+  mode = 'move';
+
+  const host = $('board-container');
+  host.querySelectorAll('canvas').forEach((cv) => cv.remove());
+
+  board = await BoardView.create(host, c.state, {
+    onMoveTap: (cell) => {
+      if (c.state.status !== 'playing' || c.inputLocked()) return;
+      if (c.legalMoves().some((m) => m.x === cell.x && m.y === cell.y)) {
+        c.dispatch({ type: 'move', to: cell });
+      }
+    },
+    onWallConfirm: (wall) => {
+      if (c.inputLocked()) return;
+      c.dispatch({ type: 'wall', wall });
+      mode = 'move';
+      board?.setMode('move');
+    },
+    checkWall: (wall) => c.checkWall(wall),
+    onInvalidWallConfirm: (check) => {
+      sfx.bonk();
+      hud.toast(hud.wallErrorMessage(check, c.state));
+    },
+    onCancel: () => setMode('move'),
+  });
+
+  wireController(c);
+  refresh();
+}
+
+// ---------------------------------------------------------------- local mode
+
+async function startLocalGame(): Promise<void> {
   if (starting) return;
   starting = true;
   try {
-    gen++;
-    $('setup-overlay').classList.add('hidden');
-    $('gameover-overlay').classList.add('hidden');
-
-    board?.destroy();
-    board = null;
+    leaveOnlineIfAny(); // also destroys an online controller, if any
     controller?.destroy();
-    queue = Promise.resolve();
-
-    controller = new GameController(playerCount, {
+    controller = null;
+    const local = new GameController(playerCount, {
       timerSeconds,
       bots: seatConfig.slice(0, playerCount),
     });
-    timerLeft = timerSeconds > 0 ? timerSeconds : null;
-    mode = 'move';
-
-    const host = $('board-container');
-    host.querySelectorAll('canvas').forEach((cv) => cv.remove());
-
-    const c = controller;
-    board = await BoardView.create(host, c.state, {
-      onMoveTap: (cell) => {
-        if (c.state.status !== 'playing' || c.isBotTurn()) return;
-        if (c.legalMoves().some((m) => m.x === cell.x && m.y === cell.y)) {
-          c.dispatch({ type: 'move', to: cell });
-        }
-      },
-      onWallConfirm: (wall) => {
-        if (c.isBotTurn()) return;
-        c.dispatch({ type: 'wall', wall });
-        mode = 'move';
-        board?.setMode('move');
-      },
-      checkWall: (wall) => c.checkWall(wall),
-      onInvalidWallConfirm: (check) => {
-        sfx.bonk();
-        hud.toast(hud.wallErrorMessage(check, c.state));
-      },
-      onCancel: () => setMode('move'),
-    });
-
-    wireController(c);
-    refresh();
-    c.begin(); // first bot turn, if seat 0 is a bot
+    await mountGame(local);
+    local.begin(); // first bot turn, if seat 0 is a bot
     if (!helpSeen()) showHelp();
-    syncPause(); // first-run help pauses bots until dismissed
+    syncPause();
   } finally {
     starting = false;
   }
@@ -276,12 +293,209 @@ function anyOverlayOpen(): boolean {
   );
 }
 
-/** Bots and the turn clock freeze whenever a modal overlay covers the board. */
+/** Local games: bots and the turn clock freeze while a modal overlay covers the board. */
 function syncPause(): void {
-  if (!controller) return;
+  if (!controller || controller.kind !== 'local') return;
   if (anyOverlayOpen()) controller.pause();
   else controller.resume();
 }
+
+// --------------------------------------------------------------- online mode
+
+function leaveOnlineIfAny(): void {
+  if (online) {
+    online.leave();
+    online = null;
+  }
+  showLobbyPanel(false);
+}
+
+function showLobbyPanel(inLobby: boolean): void {
+  $('online-entry').classList.toggle('hidden', inLobby);
+  $('online-lobby').classList.toggle('hidden', !inLobby);
+}
+
+function onlineError(msg: string): void {
+  $('online-error').textContent = msg;
+  setTimeout(() => {
+    $('online-error').textContent = '';
+  }, 4000);
+}
+
+function makeOnlineSession(): OnlineSession {
+  return new OnlineSession({
+    onLobby(lobby) {
+      renderLobby(lobby);
+      showLobbyPanel(true);
+    },
+    onSnapshot(net, isFirst) {
+      void (async () => {
+        if (controller && controller !== net) controller.destroy(); // e.g. a local game was running
+        await mountGame(net);
+        if (isFirst && !helpSeen()) showHelp();
+        if (!isFirst) hud.toast('Synced with the garden! 🌱');
+      })();
+    },
+    onError(code, msg) {
+      if (code === 'INVALID') {
+        sfx.bonk();
+        hud.toast(
+          msg === 'NOT_YOUR_TURN' ? "It's not your turn!" : hud.errorMessage(msg as ActionError),
+        );
+        return;
+      }
+      onlineError(msg);
+      hud.toast(msg);
+    },
+    onConnection(status) {
+      if (status === 'reconnecting') hud.toast('Connection lost — reconnecting… 🛜');
+      if (status === 'gone' && online) hud.toast('Disconnected from the room.');
+    },
+  });
+}
+
+function renderLobby(lobby: LobbyState): void {
+  $('lobby-code').textContent = lobby.code;
+  const isHost = lobby.members.some((m) => m.id === lobby.youId && m.host);
+
+  $('lobby-members').innerHTML = lobby.members
+    .map((m) => {
+      const tags = [
+        m.host ? '👑 host' : '',
+        m.id === lobby.youId ? 'you' : '',
+        m.seat !== null ? CHARACTER_META[CHARACTERS[m.seat]].emoji : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return `<div class="lobby-member ${m.connected ? '' : 'offline'}">
+        <span>${escapeHtml(m.name)}</span><span class="tags">${tags}${m.connected ? '' : ' · 📵'}</span>
+      </div>`;
+    })
+    .join('');
+
+  const cfg = lobby.config;
+  const pill = (label: string, active: boolean, attrs: string): string =>
+    `<button class="pill ${active ? 'active' : ''}" ${isHost ? '' : 'disabled'} ${attrs}>${label}</button>`;
+  $('lobby-config').innerHTML = `
+    <h3>Seats</h3>
+    <div class="pill-row" data-cfg="seats">
+      ${[2, 3, 4].map((n) => pill(`${n}`, cfg.seats === n, `data-seats="${n}"`)).join('')}
+    </div>
+    <h3>Turn timer</h3>
+    <div class="pill-row" data-cfg="timer">
+      ${[0, 30, 60, 90].map((t) => pill(t === 0 ? 'Off' : `${t}s`, cfg.timerSeconds === t, `data-timer="${t}"`)).join('')}
+    </div>
+    <h3>Fill empty seats with bots</h3>
+    <div class="pill-row" data-cfg="bots">
+      ${(
+        [
+          [null, 'None'],
+          ['easy', '🤖 Easy'],
+          ['medium', '🤖 Smart'],
+          ['hard', '🤖 Genius'],
+        ] as const
+      )
+        .map(([lvl, label]) => pill(label, cfg.botFill === lvl, `data-botfill="${lvl ?? 'none'}"`))
+        .join('')}
+    </div>`;
+
+  if (isHost) {
+    $('lobby-config').querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next: RoomConfig = { ...cfg };
+        if (btn.dataset.seats) next.seats = Number(btn.dataset.seats) as RoomConfig['seats'];
+        if (btn.dataset.timer !== undefined)
+          next.timerSeconds = Number(btn.dataset.timer) as RoomConfig['timerSeconds'];
+        if (btn.dataset.botfill)
+          next.botFill = btn.dataset.botfill === 'none' ? null : (btn.dataset.botfill as BotLevel);
+        sfx.pick();
+        online?.sendConfig(next);
+      });
+    });
+  }
+
+  const startBtn = $('btn-online-start') as HTMLButtonElement;
+  startBtn.style.display = isHost ? '' : 'none';
+  const humans = lobby.members.filter((m) => m.connected).length;
+  $('lobby-hint').textContent = isHost
+    ? humans >= cfg.seats
+      ? 'Everyone is here — start when ready!'
+      : cfg.botFill
+        ? 'Empty seats will be filled with bots.'
+        : `Waiting for ${cfg.seats - humans} more (or turn on bot fill).`
+    : 'Waiting for the host to start…';
+
+  if (lobby.phase !== 'lobby') {
+    $('lobby-hint').textContent = 'Game in progress — you will join as a spectator.';
+    startBtn.style.display = 'none';
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
+function initOnlineUi(): void {
+  const nameInput = $('online-name') as HTMLInputElement;
+  const codeInput = $('online-code') as HTMLInputElement;
+  nameInput.value = OnlineSession.lastName();
+  codeInput.value = OnlineSession.lastRoom();
+
+  const getName = (): string | null => {
+    const name = nameInput.value.trim();
+    if (!name) {
+      onlineError('Pick a name first!');
+      nameInput.focus();
+      return null;
+    }
+    return name;
+  };
+
+  $('btn-create-room').addEventListener('click', () => {
+    const name = getName();
+    if (!name) return;
+    leaveOnlineIfAny();
+    online = makeOnlineSession();
+    online.create(name).catch(() => onlineError('Could not reach the game server — is it running?'));
+  });
+
+  $('btn-join-room').addEventListener('click', () => {
+    const name = getName();
+    if (!name) return;
+    const code = codeInput.value.trim().toUpperCase();
+    if (code.length !== 4) {
+      onlineError('Room codes are 4 letters.');
+      codeInput.focus();
+      return;
+    }
+    leaveOnlineIfAny();
+    online = makeOnlineSession();
+    online.join(code, name).catch(() => onlineError('Could not reach the game server — is it running?'));
+  });
+
+  $('btn-online-start').addEventListener('click', () => online?.start());
+  $('btn-leave-room').addEventListener('click', () => {
+    leaveOnlineIfAny();
+  });
+  $('lobby-code').addEventListener('click', () => {
+    void navigator.clipboard?.writeText($('lobby-code').textContent ?? '');
+    hud.toast('Room code copied! 📋');
+  });
+
+  // tabs
+  $('tab-local').addEventListener('click', () => switchTab('local'));
+  $('tab-online').addEventListener('click', () => switchTab('online'));
+}
+
+function switchTab(tab: 'local' | 'online'): void {
+  $('tab-local').classList.toggle('active', tab === 'local');
+  $('tab-online').classList.toggle('active', tab === 'online');
+  $('setup-local').classList.toggle('hidden', tab !== 'local');
+  $('setup-online').classList.toggle('hidden', tab !== 'online');
+  sfx.pick();
+}
+
+// ----------------------------------------------------------------- top bar
 
 function initSetup(): void {
   const pickPill = (row: HTMLElement, target: HTMLElement): void => {
@@ -303,7 +517,7 @@ function initSetup(): void {
     timerSeconds = Number(btn.dataset.timer);
     pickPill($('setup-timer'), btn);
   });
-  $('btn-start').addEventListener('click', () => void startGame());
+  $('btn-start').addEventListener('click', () => void startLocalGame());
   // clicking the backdrop resumes a running game
   $('setup-overlay').addEventListener('click', (e) => {
     if (e.target === $('setup-overlay') && controller) {
@@ -321,6 +535,12 @@ function initTopbar(): void {
     syncPause();
   });
   $('btn-new').addEventListener('click', () => {
+    if (controller?.kind === 'online') {
+      if (!window.confirm('Leave the online room?')) return;
+      leaveOnlineIfAny();
+      controller = null;
+      switchTab('online');
+    }
     $('setup-overlay').classList.remove('hidden');
     syncPause();
   });
@@ -335,10 +555,18 @@ function initTopbar(): void {
     muteBtn.textContent = sfx.toggleMuted() ? '🔇' : '🔊';
   });
 
-  $('btn-rematch').addEventListener('click', () => void startGame());
+  $('btn-rematch').addEventListener('click', () => {
+    if (controller?.kind === 'online') {
+      if (online?.isHost()) online.rematch();
+      else hud.toast('Only the host can start a rematch!');
+      return;
+    }
+    void startLocalGame();
+  });
   $('btn-setup').addEventListener('click', () => {
     $('gameover-overlay').classList.add('hidden');
     $('setup-overlay').classList.remove('hidden');
+    syncPause();
   });
 
   window.addEventListener('keydown', (e) => {
@@ -352,6 +580,7 @@ function initTopbar(): void {
 }
 
 initSetup();
+initOnlineUi();
 initTopbar();
 initHelp(() => syncPause());
 
@@ -361,4 +590,5 @@ if (import.meta.env.DEV) {
     get: () => (controller ? { state: controller.state, history: controller.history } : null),
   });
   Object.defineProperty(window, '__quoriBoard', { get: () => board });
+  Object.defineProperty(window, '__quoriOnline', { get: () => online });
 }

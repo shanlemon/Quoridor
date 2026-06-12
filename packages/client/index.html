@@ -42,23 +42,57 @@
       <div class="card setup-card">
         <h1>🌸 Quori Quest</h1>
         <p class="subtitle">A cozy garden race of fences &amp; friends</p>
-        <h3>Who's playing?</h3>
-        <div id="setup-players" class="pill-row">
-          <button class="pill seat-pill active" data-count="2">2 🐰🐸</button>
-          <button class="pill seat-pill" data-count="3">3 🐰🐸🐱</button>
-          <button class="pill seat-pill" data-count="4">4 🐰🐸🐱🐧</button>
+        <div id="mode-tabs" class="pill-row">
+          <button id="tab-local" class="pill active">🏠 Local</button>
+          <button id="tab-online" class="pill">🌐 Online</button>
         </div>
-        <h3>Who plays whom?</h3>
-        <div id="setup-seats"></div>
-        <h3>Turn timer</h3>
-        <div id="setup-timer" class="pill-row">
-          <button class="pill timer-pill active" data-timer="0">Off</button>
-          <button class="pill timer-pill" data-timer="30">30s</button>
-          <button class="pill timer-pill" data-timer="60">60s</button>
-          <button class="pill timer-pill" data-timer="90">90s</button>
+
+        <div id="setup-local">
+          <h3>Who's playing?</h3>
+          <div id="setup-players" class="pill-row">
+            <button class="pill seat-pill active" data-count="2">2 🐰🐸</button>
+            <button class="pill seat-pill" data-count="3">3 🐰🐸🐱</button>
+            <button class="pill seat-pill" data-count="4">4 🐰🐸🐱🐧</button>
+          </div>
+          <h3>Who plays whom?</h3>
+          <div id="setup-seats"></div>
+          <h3>Turn timer</h3>
+          <div id="setup-timer" class="pill-row">
+            <button class="pill timer-pill active" data-timer="0">Off</button>
+            <button class="pill timer-pill" data-timer="30">30s</button>
+            <button class="pill timer-pill" data-timer="60">60s</button>
+            <button class="pill timer-pill" data-timer="90">90s</button>
+          </div>
+          <button id="btn-start" class="big-btn">Start the Quest! 🌷</button>
+          <p class="hint">Hotseat play — pass the mouse, everyone shares this screen.</p>
         </div>
-        <button id="btn-start" class="big-btn">Start the Quest! 🌷</button>
-        <p class="hint">Hotseat play — pass the mouse, everyone shares this screen.</p>
+
+        <div id="setup-online" class="hidden">
+          <div id="online-entry">
+            <h3>Your name</h3>
+            <input id="online-name" class="text-input" maxlength="20" placeholder="Garden friend" />
+            <div class="pill-row">
+              <button id="btn-create-room" class="big-btn">Create a room ✨</button>
+            </div>
+            <h3>or join a friend's room</h3>
+            <div class="pill-row">
+              <input id="online-code" class="text-input code-input" maxlength="4" placeholder="CODE" />
+              <button id="btn-join-room" class="pill">Join ➜</button>
+            </div>
+            <p id="online-error" class="hint error-hint"></p>
+            <p class="hint">Played in a Discord voice channel later (M4) — for now share the room code.</p>
+          </div>
+          <div id="online-lobby" class="hidden">
+            <h3>Room code <span id="lobby-code" class="code-chip" title="Click to copy"></span></h3>
+            <div id="lobby-members"></div>
+            <div id="lobby-config"></div>
+            <div class="pill-row">
+              <button id="btn-online-start" class="big-btn">Start the Quest! 🌷</button>
+              <button id="btn-leave-room" class="pill">Leave room</button>
+            </div>
+            <p id="lobby-hint" class="hint"></p>
+          </div>
+        </div>
       </div>
     </div>
 

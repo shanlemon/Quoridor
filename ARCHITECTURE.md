@@ -3,12 +3,41 @@
 ## Packages
 
 ```
-@quori/engine   pure TS rules engine — no DOM, no Node APIs (lib: ES2022 only)
-@quori/client   Vite + PixiJS v8 presentation layer
+@quori/engine     pure TS rules engine — no DOM, no Node APIs (lib: ES2022 only)
+@quori/protocol   wire protocol — zod schemas validate every client→server message
+@quori/server     authoritative game server — node:http + ws, rooms, bots, reconnect
+@quori/client     Vite + PixiJS v8 presentation layer (hotseat + online)
 ```
 
-The client consumes the engine as workspace source (`exports` → `src/index.ts`);
-Vite bundles it directly, Vitest runs it directly. Nothing is published.
+All packages consume each other as workspace source (`exports` → `src/index.ts`);
+Vite/tsx/Vitest run the TypeScript directly. Nothing is published.
+
+## Multiplayer model (M3)
+
+```
+ Browser A ─┐                        ┌──────────────────────────────┐
+ Browser B ─┼── wss /ws ──────────▶ │ Room (one per code/instance) │
+ Browser C ─┘   intents (zod)       │  · lobby → playing → finished│
+   ▲                                │  · applyAction (shared engine)│
+   └── events / snapshots ───────── │  · turnSeq replay guard       │
+                                    │  · server timers + bots       │
+                                    │  · 60s grace → bot takeover   │
+                                    └──────────────────────────────┘
+```
+
+- **The server is authoritative.** Clients send intents (`action` with the
+  `turnSeq` they saw); the room validates seat ownership, replay freshness, and
+  rule legality via the same `@quori/engine`, then broadcasts the event.
+- **Clients are event-sourced.** `NetworkController` re-applies each broadcast
+  action through the engine and verifies the resulting `turnSeq`; any divergence
+  triggers a `resync` → full snapshot. Join/reconnect always starts from a snapshot.
+- **Reconnect:** a stable client token identifies the member; the seat is held for
+  60 s after a drop, then bot-driven until the player returns. Extra joiners are
+  spectators. Hosts migrate when the host leaves the lobby.
+- **Discord-readiness (M4):** rooms are keyed by a 4-letter code today; under the
+  Embedded App SDK the `instanceId` becomes the key. The server serves the built
+  client from the same origin with relative URLs only, matching the activity
+  proxy's constraints; `/api/token` is stubbed for the OAuth exchange.
 
 ## State flow
 
@@ -39,10 +68,9 @@ Vite bundles it directly, Vitest runs it directly. Nothing is published.
   layer just sees ordinary events — it additionally hides move dots, locks the mode
   bar, and ignores taps while `isBotTurn()`. Bots and the turn timer both pause while
   the tab is hidden, matching the paused renderer.
-- This is deliberately the shape of the future client↔server protocol: `dispatch`
-  becomes "send intent", the event handlers become "apply server broadcast". The
-  engine's `turnSeq` (bumped on every accepted action, unchanged on rejection) is the
-  replay/idempotency guard.
+- The local `GameController` and the online `NetworkController` expose the same
+  surface (`dispatch`, events, `inputLocked()`, `seatMeta()`), so the board, HUD and
+  all animations are identical in both modes; `main.ts` only swaps the controller.
 
 ## Engine model
 

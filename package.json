@@ -7,7 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "pnpm --filter @quori/client dev",
+    "dev": "pnpm --parallel --filter @quori/client --filter @quori/server dev",
+    "dev:client": "pnpm --filter @quori/client dev",
+    "dev:server": "pnpm --filter @quori/server dev",
     "playtest": "pnpm --filter @quori/engine playtest",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
