@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="color-scheme" content="light" />
+    <title>Quori Quest 🌸</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <div id="logo">🌸 Quori Quest</div>
+        <div id="status-text"></div>
+        <div id="topbar-buttons">
+          <button id="btn-history" class="icon-btn" title="Move history">📜</button>
+          <button id="btn-mute" class="icon-btn" title="Sound on/off">🔊</button>
+          <button id="btn-help" class="icon-btn" title="How to play">❓</button>
+          <button id="btn-new" class="icon-btn" title="New game">🏠</button>
+        </div>
+      </header>
+      <main id="main">
+        <aside id="players-panel"></aside>
+        <section id="board-section">
+          <div id="board-container"></div>
+          <div id="mode-bar">
+            <button id="btn-mode-move" class="pill mode-pill active">🐾 Move</button>
+            <button id="btn-mode-wall" class="pill mode-pill">
+              🪵 Fence <span id="wall-count" class="count-chip"></span>
+            </button>
+          </div>
+        </section>
+        <aside id="history-panel">
+          <h3>Moves 📜</h3>
+          <ol id="history-list"></ol>
+        </aside>
+      </main>
+    </div>
+
+    <div id="toast"></div>
+
+    <div id="setup-overlay" class="overlay">
+      <div class="card setup-card">
+        <h1>🌸 Quori Quest</h1>
+        <p class="subtitle">A cozy garden race of fences &amp; friends</p>
+        <h3>Who's playing?</h3>
+        <div id="setup-players" class="pill-row">
+          <button class="pill seat-pill active" data-count="2">2 🐰🐸</button>
+          <button class="pill seat-pill" data-count="3">3 🐰🐸🐱</button>
+          <button class="pill seat-pill" data-count="4">4 🐰🐸🐱🐧</button>
+        </div>
+        <h3>Turn timer</h3>
+        <div id="setup-timer" class="pill-row">
+          <button class="pill timer-pill active" data-timer="0">Off</button>
+          <button class="pill timer-pill" data-timer="30">30s</button>
+          <button class="pill timer-pill" data-timer="60">60s</button>
+          <button class="pill timer-pill" data-timer="90">90s</button>
+        </div>
+        <button id="btn-start" class="big-btn">Start the Quest! 🌷</button>
+        <p class="hint">Hotseat play — pass the mouse, everyone shares this screen.</p>
+      </div>
+    </div>
+
+    <div id="help-overlay" class="overlay hidden">
+      <div class="card help-card">
+        <div id="help-slide"></div>
+        <div id="help-dots"></div>
+        <div class="help-nav">
+          <button id="help-prev" class="pill">← Back</button>
+          <button id="help-next" class="pill big-accent">Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gameover-overlay" class="overlay hidden">
+      <div class="card gameover-card">
+        <h1 id="gameover-title"></h1>
+        <table id="results-table"></table>
+        <p id="gameover-duration"></p>
+        <div class="pill-row">
+          <button id="btn-rematch" class="big-btn">Rematch! 🔁</button>
+          <button id="btn-setup" class="pill">Change setup</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

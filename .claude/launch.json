@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "quori-client",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@quori/client", "dev"],
+      "port": 5173
+    }
+  ]
+}
