@@ -1,7 +1,8 @@
 # 🌸 Quori Quest
 
-A cute, cozy take on the board game **Quoridor** — chibi animals racing across a garden,
-building picket fences to slow each other down. 2–4 players, hotseat, fully playable offline.
+A cute, cozy take on the board game **Quoridor** — chibi animals racing across an
+**isometric 3D garden**, building picket fences to slow each other down. 2–4 players,
+hotseat or online multiplayer, with bots.
 
 > **Status:** Milestones **M1 (rules engine)**, **M2 (local hotseat client)** and
 > **M3 (authoritative multiplayer server)** are complete, plus a bot AI ladder.

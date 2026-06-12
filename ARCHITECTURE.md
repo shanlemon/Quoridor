@@ -94,14 +94,23 @@ Key entry points (`packages/engine/src`):
 | `rankPlayers(state)` | winner first, then remaining distance (ties share rank) |
 | `renderAscii(state)` | CLI playtest / debugging |
 
-## Client rendering
+## Client rendering (isometric)
 
-- Everything is drawn in a fixed **780×780 unit space** (CELL 64, GAP 14, MARGIN 46);
-  one `world` container is scaled/centred to the host element, so responsive resize is
-  a single scale update (a `ResizeObserver` drives it) and all hit math stays integral.
+- All game/hit-test **math** lives in a flat **780×780 board-unit space** (CELL 64,
+  GAP 14, MARGIN 46); only **drawing** projects through a classic 2:1 isometric
+  transform (`iso(u,v,z)`), and pointer input is inverse-projected back into board
+  units — so cell/wall-slot picking is identical to a flat renderer.
+- Tiles are extruded "garden blocks" (top diamond + two shaded side faces) over one
+  big extruded mat; fences stand upright with posts, rails and ground shadows, drawn
+  in white so the placement ghost can be tinted green/red multiplicatively.
+- Pawns, fences and goal banners live in one depth-sorted layer
+  (`zIndex = u + v` of their board position) so things overlap correctly; characters
+  are billboarded vector sprites with squashed elliptical shadows.
+- One `world` container is scaled/centred to the host element, so responsive resize
+  is a single scale update (a `ResizeObserver` drives it).
 - Characters are pure vector `Graphics` (no assets). Juice over detail: squash-and-
   stretch hops with anticipation/landing, fence drop with dust puff + micro screen
-  shake, idle bobbing, pulsing legal-move dots, confetti on win.
+  shake, idle bobbing, pulsing legal-move tiles, confetti on win.
 - SFX are synthesized with WebAudio oscillators (hop/thunk/bonk/chime/fanfare);
   mute preference persists in `localStorage`.
 - The tween scheduler (`anim.ts`) is promise-based and driven by the Pixi ticker; a
