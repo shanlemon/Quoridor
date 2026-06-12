@@ -3,12 +3,15 @@ import {
   applyAction,
   bestAutoMove,
   checkWallPlacement,
+  chooseBotAction,
   createGame,
   getLegalMoves,
+  getLegalWallSlots,
 } from '@quori/engine';
 import type {
   Action,
   ActionError,
+  BotLevel,
   Cell,
   GameState,
   PlayerCount,
@@ -36,9 +39,9 @@ export interface ControllerEvents {
 type Handler<T> = (e: T) => void;
 
 /**
- * Owns the authoritative local GameState and the turn timer. The rendering
- * layer never mutates state — it dispatches intents and reacts to events
- * (same shape a future multiplayer server protocol will have).
+ * Owns the authoritative local GameState, the turn timer, and bot turns. The
+ * rendering layer never mutates state — it dispatches intents and reacts to
+ * events (same shape a future multiplayer server protocol will have).
  */
 export class GameController {
   state: GameState;
@@ -46,24 +49,65 @@ export class GameController {
   readonly startedAt = Date.now();
   readonly timerSeconds: number; // 0 = off
   readonly initialWalls: number;
+  readonly bots: readonly (BotLevel | null)[];
 
   private interval: ReturnType<typeof setInterval> | null = null;
+  private botTimeout: ReturnType<typeof setTimeout> | null = null;
   private secondsLeft = 0;
+  private began = false;
+  private paused = false;
   private handlers: { [K in keyof ControllerEvents]?: Handler<ControllerEvents[K]>[] } = {};
 
-  constructor(numPlayers: PlayerCount, opts: { timerSeconds?: number } = {}) {
+  constructor(
+    numPlayers: PlayerCount,
+    opts: { timerSeconds?: number; bots?: readonly (BotLevel | null)[] } = {},
+  ) {
     this.state = createGame(numPlayers);
     this.initialWalls = this.state.players[0].wallsLeft;
     this.timerSeconds = opts.timerSeconds ?? 0;
+    this.bots = this.state.players.map((_, i) => opts.bots?.[i] ?? null);
     document.addEventListener('visibilitychange', this.onVisibility);
     this.resetTimer();
   }
 
-  /** Rendering pauses in hidden tabs (RAF) — pause the clock too, so turns never resolve unseen. */
+  /** Rendering pauses in hidden tabs (RAF) — pause the clock and bots too, so turns never resolve unseen. */
   private readonly onVisibility = (): void => {
-    if (document.hidden) this.stopTimer();
-    else this.resetTimer();
+    if (document.hidden) {
+      this.stopTimer();
+      this.stopBot();
+    } else {
+      this.resumeTimer();
+      this.scheduleBot();
+    }
   };
+
+  /** Call once the view is wired up — kicks off the first bot turn if seat 0 is a bot. */
+  begin(): void {
+    this.began = true;
+    this.scheduleBot();
+  }
+
+  /** Freeze the clock and bot turns while a modal overlay covers the board. */
+  pause(): void {
+    this.paused = true;
+    this.stopTimer();
+    this.stopBot();
+  }
+
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.resumeTimer();
+    this.scheduleBot();
+  }
+
+  isBot(seat: number): boolean {
+    return this.bots[seat] !== null;
+  }
+
+  isBotTurn(): boolean {
+    return this.state.status === 'playing' && this.isBot(this.state.current);
+  }
 
   on<K extends keyof ControllerEvents>(ev: K, h: Handler<ControllerEvents[K]>): void {
     const list = (this.handlers[ev] ??= []) as Handler<ControllerEvents[K]>[];
@@ -95,10 +139,12 @@ export class GameController {
 
     if (this.state.status === 'finished' && this.state.winner !== null) {
       this.stopTimer();
+      this.stopBot();
       this.emit('finished', { winner: this.state.winner });
     } else {
       this.resetTimer();
       this.emit('turn', { seat: this.state.current });
+      this.scheduleBot();
     }
     return true;
   }
@@ -123,11 +169,52 @@ export class GameController {
     if (!this.dispatch({ type: 'pass' }, true)) this.stopTimer();
   }
 
+  private scheduleBot(): void {
+    this.stopBot();
+    if (!this.began || this.paused || !this.isBotTurn() || document.hidden) return;
+    const level = this.bots[this.state.current];
+    if (!level) return;
+    // A short "thinking" beat keeps bot turns readable.
+    this.botTimeout = setTimeout(
+      () => {
+        this.botTimeout = null;
+        if (this.paused || !this.isBotTurn()) return;
+        // The AI contract is "always legal" — but a bot must never soft-lock
+        // the game, so fall back to any legal action if dispatch refuses.
+        if (!this.dispatch(chooseBotAction(this.state, level))) this.botFallback();
+      },
+      700 + Math.random() * 600,
+    );
+  }
+
+  private botFallback(): void {
+    const mv = bestAutoMove(this.state, this.state.current);
+    if (mv && this.dispatch({ type: 'move', to: mv })) return;
+    const slots = getLegalWallSlots(this.state);
+    if (slots.length > 0 && this.dispatch({ type: 'wall', wall: slots[0] })) return;
+    this.dispatch({ type: 'pass' });
+  }
+
+  private stopBot(): void {
+    if (this.botTimeout !== null) {
+      clearTimeout(this.botTimeout);
+      this.botTimeout = null;
+    }
+  }
+
+  /** Full reset — a new turn starts with a fresh clock. */
   private resetTimer(): void {
+    this.secondsLeft = this.timerSeconds;
+    this.resumeTimer();
+  }
+
+  /** (Re)start the countdown from the PRESERVED remaining seconds (tab return, overlay close). */
+  private resumeTimer(): void {
     this.stopTimer();
     if (!this.timerSeconds || this.state.status !== 'playing') return;
-    if (document.hidden) return;
-    this.secondsLeft = this.timerSeconds;
+    if (document.hidden || this.paused) return;
+    if (this.isBotTurn()) return; // bots act on their own; no countdown
+    if (this.secondsLeft <= 0) this.secondsLeft = this.timerSeconds;
     this.emit('timer', { secondsLeft: this.secondsLeft });
     this.interval = setInterval(() => {
       this.secondsLeft -= 1;
@@ -146,6 +233,7 @@ export class GameController {
   destroy(): void {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.stopTimer();
+    this.stopBot();
     this.handlers = {};
   }
 }

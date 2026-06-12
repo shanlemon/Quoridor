@@ -1,6 +1,6 @@
 import './styles.css';
-import { getLegalWallSlots } from '@quori/engine';
-import type { PlayerCount } from '@quori/engine';
+import { CHARACTERS, getLegalWallSlots } from '@quori/engine';
+import type { BotLevel, PlayerCount } from '@quori/engine';
 import { BoardView } from './board-view';
 import type { BoardMode } from './board-view';
 import { CHARACTER_META } from './characters';
@@ -24,6 +24,7 @@ let timerLeft: number | null = null;
 // Setup choices
 let playerCount: PlayerCount = 2;
 let timerSeconds = 0;
+const seatConfig: (BotLevel | null)[] = [null, null, null, null];
 
 /**
  * Each startGame() bumps the generation; queued continuations from a previous
@@ -51,12 +52,14 @@ function enqueue(myGen: number, fn: () => Promise<void>): void {
 function refresh(): void {
   if (!controller || !board) return;
   const state = controller.state;
-  hud.renderPlayers(controller, state.status === 'playing' ? timerLeft : null);
-  hud.updateStatus(state, mode);
-  hud.updateModeBar(state, mode);
+  const botTurn = controller.isBotTurn();
+  hud.renderPlayers(controller, state.status === 'playing' && !botTurn ? timerLeft : null);
+  hud.updateStatus(state, mode, botTurn);
+  hud.updateModeBar(state, mode, botTurn);
   hud.renderHistory(controller);
   board.setActiveSeat(state.status === 'playing' ? state.current : null);
-  const dots = state.status === 'playing' && mode === 'move' ? controller.legalMoves() : [];
+  const dots =
+    state.status === 'playing' && !botTurn && mode === 'move' ? controller.legalMoves() : [];
   board.setHighlights(dots, CHARACTER_META[state.players[state.current].character].color);
   maybeAutoPass();
 }
@@ -70,6 +73,7 @@ function refresh(): void {
 function maybeAutoPass(): void {
   const c = controller;
   if (!c || c.state.status !== 'playing') return;
+  if (c.isBotTurn()) return; // bots pass on their own
   if (c.legalMoves().length > 0) return;
   if (getLegalWallSlots(c.state).length > 0) return;
   const n = c.state.players.length;
@@ -90,6 +94,11 @@ function maybeAutoPass(): void {
 function setMode(next: BoardMode): void {
   if (!controller || !board) return;
   if (controller.state.status !== 'playing') return;
+  if (next === 'wall' && controller.isBotTurn()) {
+    sfx.bonk();
+    hud.toast("It's not your turn! 🤖");
+    return;
+  }
   if (next === 'wall' && controller.state.players[controller.state.current].wallsLeft === 0) {
     sfx.bonk();
     hud.toast('No fences left!');
@@ -142,8 +151,12 @@ function wireController(c: GameController): void {
   c.on('turn', () => {
     if (gen !== myGen) return;
     sfx.chime();
-    // After a wall, the new player may be in wall mode with 0 fences — bounce back.
-    if (mode === 'wall' && c.state.players[c.state.current].wallsLeft === 0) {
+    // After a wall, the new player may be in wall mode with 0 fences — bounce
+    // back. Bot turns also force move mode so no human ghost lingers.
+    if (
+      mode === 'wall' &&
+      (c.isBotTurn() || c.state.players[c.state.current].wallsLeft === 0)
+    ) {
       mode = 'move';
       board?.setMode('move');
     }
@@ -164,7 +177,9 @@ function wireController(c: GameController): void {
       mode = 'move';
       refresh();
       await board?.celebrateWin(winner);
-      hud.showGameOver(c);
+      // Don't stack the results dialog over an open setup dialog — the user
+      // has already moved on to configuring the next game.
+      if ($('setup-overlay').classList.contains('hidden')) hud.showGameOver(c);
     });
   });
 }
@@ -182,7 +197,10 @@ async function startGame(): Promise<void> {
     controller?.destroy();
     queue = Promise.resolve();
 
-    controller = new GameController(playerCount, { timerSeconds });
+    controller = new GameController(playerCount, {
+      timerSeconds,
+      bots: seatConfig.slice(0, playerCount),
+    });
     timerLeft = timerSeconds > 0 ? timerSeconds : null;
     mode = 'move';
 
@@ -192,12 +210,13 @@ async function startGame(): Promise<void> {
     const c = controller;
     board = await BoardView.create(host, c.state, {
       onMoveTap: (cell) => {
-        if (c.state.status !== 'playing') return;
+        if (c.state.status !== 'playing' || c.isBotTurn()) return;
         if (c.legalMoves().some((m) => m.x === cell.x && m.y === cell.y)) {
           c.dispatch({ type: 'move', to: cell });
         }
       },
       onWallConfirm: (wall) => {
+        if (c.isBotTurn()) return;
         c.dispatch({ type: 'wall', wall });
         mode = 'move';
         board?.setMode('move');
@@ -212,9 +231,42 @@ async function startGame(): Promise<void> {
 
     wireController(c);
     refresh();
+    c.begin(); // first bot turn, if seat 0 is a bot
     if (!helpSeen()) showHelp();
+    syncPause(); // first-run help pauses bots until dismissed
   } finally {
     starting = false;
+  }
+}
+
+const SEAT_LABELS: Record<'human' | BotLevel, string> = {
+  human: '🧑 Human',
+  easy: '🤖 Easy',
+  medium: '🤖 Smart',
+  hard: '🤖 Genius',
+};
+
+function renderSeats(): void {
+  const host = $('setup-seats');
+  host.innerHTML = '';
+  for (let i = 0; i < playerCount; i++) {
+    const meta = CHARACTER_META[CHARACTERS[i]];
+    const row = document.createElement('div');
+    row.className = 'seat-row';
+    const name = document.createElement('span');
+    name.className = 'seat-name';
+    name.textContent = `${meta.emoji} ${meta.name}`;
+    const btn = document.createElement('button');
+    btn.className = 'pill';
+    btn.textContent = SEAT_LABELS[seatConfig[i] ?? 'human'];
+    btn.addEventListener('click', () => {
+      const order: (BotLevel | null)[] = [null, 'easy', 'medium', 'hard'];
+      seatConfig[i] = order[(order.indexOf(seatConfig[i]) + 1) % order.length];
+      sfx.pick();
+      renderSeats();
+    });
+    row.append(name, btn);
+    host.appendChild(row);
   }
 }
 
@@ -222,6 +274,13 @@ function anyOverlayOpen(): boolean {
   return ['setup-overlay', 'help-overlay', 'gameover-overlay'].some(
     (id) => !$(id).classList.contains('hidden'),
   );
+}
+
+/** Bots and the turn clock freeze whenever a modal overlay covers the board. */
+function syncPause(): void {
+  if (!controller) return;
+  if (anyOverlayOpen()) controller.pause();
+  else controller.resume();
 }
 
 function initSetup(): void {
@@ -235,7 +294,9 @@ function initSetup(): void {
     if (!btn) return;
     playerCount = Number(btn.dataset.count) as PlayerCount;
     pickPill($('setup-players'), btn);
+    renderSeats();
   });
+  renderSeats();
   $('setup-timer').addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-timer]');
     if (!btn) return;
@@ -247,6 +308,7 @@ function initSetup(): void {
   $('setup-overlay').addEventListener('click', (e) => {
     if (e.target === $('setup-overlay') && controller) {
       $('setup-overlay').classList.add('hidden');
+      syncPause();
     }
   });
 }
@@ -254,8 +316,14 @@ function initSetup(): void {
 function initTopbar(): void {
   $('btn-mode-move').addEventListener('click', () => setMode('move'));
   $('btn-mode-wall').addEventListener('click', () => setMode('wall'));
-  $('btn-help').addEventListener('click', () => showHelp());
-  $('btn-new').addEventListener('click', () => $('setup-overlay').classList.remove('hidden'));
+  $('btn-help').addEventListener('click', () => {
+    showHelp();
+    syncPause();
+  });
+  $('btn-new').addEventListener('click', () => {
+    $('setup-overlay').classList.remove('hidden');
+    syncPause();
+  });
   $('btn-history').addEventListener('click', () => {
     const panel = $('history-panel');
     panel.classList.toggle('open');
@@ -285,7 +353,7 @@ function initTopbar(): void {
 
 initSetup();
 initTopbar();
-initHelp();
+initHelp(() => syncPause());
 
 // Dev-only introspection hooks for QA tooling.
 if (import.meta.env.DEV) {

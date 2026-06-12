@@ -21,6 +21,9 @@ pnpm dev          # → http://localhost:5173
 ```
 
 Pick 2, 3 or 4 players (hotseat — pass the mouse), optionally a turn timer, and start.
+Any seat can be handed to a **bot** in the "Who plays whom?" section — cycle each
+critter between 🧑 Human, 🤖 Easy, 🤖 Smart and 🤖 Genius. All-bot games work too
+(sit back and watch the garden sort itself out).
 
 ### Controls
 
@@ -81,6 +84,12 @@ pnpm check        # CI gate: test + typecheck + build
 - Monotonic `turnSeq` on every accepted action (idempotency guard for the future server).
 - A `pass` action, legal only when a player has no move and no legal fence (rare but
   reachable in 3–4p games).
+- `chooseBotAction(state, level)` — the bot ladder. *Easy* races its shortest path
+  (with a little wandering, never fences). *Smart* greedily maximizes the race margin
+  (closest opponent's distance minus its own) over every move and legal fence, paying
+  a small cost per fence so it doesn't waste them. *Genius* adds a one-ply look-ahead
+  against the opponent's best reply whenever the race is tight. All levels take an
+  immediate winning move and only consider fences when not comfortably ahead.
 
 **Testing:** 253 tests. Besides the unit suites, `test/_audit_*.test.ts` were written by
 independent adversarial reviewers against the official rules, including a differential
@@ -93,6 +102,9 @@ implementation across 2,000 random positions.
 2. `pnpm dev`, start a **4-player** game — four pawns on edge centers, 5 fences each.
 3. Place a fence next to a pawn corner pocket so it would seal someone in → red ghost,
    confirming shows the "would trap" toast, state unchanged.
+3b. Start a 2p game with Pebble set to 🤖 — after your hop the status reads
+   "Pebble is thinking… 🤖" and the bot replies on its own; your taps during its
+   turn do nothing.
 4. March two pawns face to face → the cell *behind* the opponent glows; the jump lands.
 5. Finish a 2p race → confetti celebration, results with placements/fences used/duration,
    **Rematch** resets cleanly.

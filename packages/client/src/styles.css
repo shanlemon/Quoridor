@@ -371,6 +371,25 @@ body {
   margin-top: 14px;
 }
 
+.seat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 280px;
+  margin: 6px auto;
+}
+
+.seat-row .seat-name {
+  font-size: 0.95rem;
+}
+
+.seat-row .pill {
+  padding: 5px 14px;
+  font-size: 0.85rem;
+  min-width: 130px;
+}
+
 #btn-start {
   margin-top: 22px;
 }

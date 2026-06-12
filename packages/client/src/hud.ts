@@ -30,11 +30,12 @@ export class Hud {
           active && timerLeft !== null
             ? `<span class="timer-badge ${timerLeft <= 5 ? 'urgent' : ''}">⏱ ${timerLeft}s</span>`
             : '';
+        const bot = c.isBot(p.seat) ? ' 🤖' : '';
         return `
         <div class="player-card ${active ? 'active' : ''} ${winner ? 'winner' : ''}" style="--pc:${meta.colorCss}">
           <div class="avatar" style="--pc:${meta.colorCss}40">${meta.emoji}</div>
           <div class="pinfo">
-            <div class="pname">${meta.name} <span class="goal-hint">${meta.icon}</span></div>
+            <div class="pname">${meta.name}${bot} <span class="goal-hint">${meta.icon}</span></div>
             <div class="goal-hint">home: ${GOAL_ARROWS[p.goal]} ${p.goal}</div>
             <div class="fences">${fences}</div>
           </div>
@@ -44,7 +45,7 @@ export class Hud {
       .join('');
   }
 
-  updateStatus(state: GameState, mode: 'move' | 'wall'): void {
+  updateStatus(state: GameState, mode: 'move' | 'wall', botThinking = false): void {
     const status = $('status-text');
     if (state.status === 'finished' && state.winner !== null) {
       const meta = CHARACTER_META[state.players[state.winner].character];
@@ -52,6 +53,10 @@ export class Hud {
       return;
     }
     const meta = CHARACTER_META[state.players[state.current].character];
+    if (botThinking) {
+      status.textContent = `${meta.emoji} ${meta.name} is thinking… 🤖`;
+      return;
+    }
     if (mode === 'move') {
       status.textContent = `${meta.emoji} ${meta.name}'s turn — tap a glowing dot to hop!`;
     } else {
@@ -61,16 +66,16 @@ export class Hud {
     }
   }
 
-  updateModeBar(state: GameState, mode: 'move' | 'wall'): void {
+  updateModeBar(state: GameState, mode: 'move' | 'wall', inputLocked = false): void {
     const moveBtn = $('btn-mode-move') as HTMLButtonElement;
     const wallBtn = $('btn-mode-wall') as HTMLButtonElement;
     moveBtn.classList.toggle('active', mode === 'move');
     wallBtn.classList.toggle('active', mode === 'wall');
     const me = state.players[state.current];
     $('wall-count').textContent = String(me.wallsLeft);
-    const over = state.status !== 'playing';
-    moveBtn.disabled = over;
-    wallBtn.disabled = over || me.wallsLeft === 0;
+    const locked = state.status !== 'playing' || inputLocked;
+    moveBtn.disabled = locked;
+    wallBtn.disabled = locked || me.wallsLeft === 0;
   }
 
   renderHistory(c: GameController): void {

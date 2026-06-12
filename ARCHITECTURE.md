@@ -34,6 +34,11 @@ Vite bundles it directly, Vitest runs it directly. Nothing is published.
   showing anything; every state change goes through `applyAction`.
 - `main.ts` wires controller events into a **serialized animation queue** so a timer
   auto-move can never interleave with a running hop/fence animation.
+- **Bots** live in the controller: any seat may be a `BotLevel`; after each turn the
+  controller schedules `chooseBotAction` behind a 0.7–1.3 s "thinking" delay. The view
+  layer just sees ordinary events — it additionally hides move dots, locks the mode
+  bar, and ignores taps while `isBotTurn()`. Bots and the turn timer both pause while
+  the tab is hidden, matching the paused renderer.
 - This is deliberately the shape of the future client↔server protocol: `dispatch`
   becomes "send intent", the event handlers become "apply server broadcast". The
   engine's `turnSeq` (bumped on every accepted action, unchanged on rejection) is the
@@ -57,6 +62,7 @@ Key entry points (`packages/engine/src`):
 | `getLegalWallSlots(state)` | all currently legal slots |
 | `applyAction(state, action)` | move / wall / pass → new state or typed error |
 | `distanceField / shortestPathLength / bestAutoMove` | BFS distances (pawns ignored), auto-move |
+| `chooseBotAction(state, level, rng?)` | bot ladder: easy racer / greedy margin heuristic / +1-ply look-ahead |
 | `rankPlayers(state)` | winner first, then remaining distance (ties share rank) |
 | `renderAscii(state)` | CLI playtest / debugging |
 

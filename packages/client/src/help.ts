@@ -23,6 +23,7 @@ const SLIDES = [
 
 const SEEN_KEY = 'quori-help-seen';
 let idx = 0;
+let onCloseCb: (() => void) | null = null;
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -44,6 +45,7 @@ function render(): void {
 function close(): void {
   localStorage.setItem(SEEN_KEY, '1');
   $('help-overlay').classList.add('hidden');
+  onCloseCb?.();
 }
 
 export function helpSeen(): boolean {
@@ -56,7 +58,8 @@ export function showHelp(): void {
   $('help-overlay').classList.remove('hidden');
 }
 
-export function initHelp(): void {
+export function initHelp(onClose?: () => void): void {
+  onCloseCb = onClose ?? null;
   $('help-prev').addEventListener('click', () => {
     if (idx > 0) {
       idx--;
