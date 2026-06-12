@@ -9,6 +9,7 @@
  *   w e3h    place a horizontal wall at e3 (or e3v for vertical)
  *   moves    list legal destinations
  *   auto     play the shortest-path auto-move
+ *   pass     pass the turn (only legal when you have no move and no fence)
  *   q        quit
  */
 import readline from 'node:readline/promises';
@@ -59,6 +60,8 @@ async function main(): Promise<void> {
     if (line === 'auto') {
       const mv = bestAutoMove(state, state.current);
       result = mv ? applyAction(state, { type: 'move', to: mv }) : applyAction(state, { type: 'pass' });
+    } else if (line === 'pass') {
+      result = applyAction(state, { type: 'pass' });
     } else if (line.startsWith('m ')) {
       const cell = parseCell(line.slice(2));
       if (!cell) {
@@ -74,11 +77,15 @@ async function main(): Promise<void> {
       }
       result = applyAction(state, { type: 'wall', wall });
     } else {
-      console.log('Commands: m <cell> | w <wall> | moves | auto | q');
+      console.log('Commands: m <cell> | w <wall> | moves | auto | pass | q');
       continue;
     }
     if (!result.ok) {
-      console.log(`✗ ${result.error}`);
+      if (result.error === 'PASS_NOT_ALLOWED') {
+        console.log('✗ PASS_NOT_ALLOWED — you still have a legal move or fence (try "moves" or "w <wall>")');
+      } else {
+        console.log(`✗ ${result.error}`);
+      }
       continue;
     }
     state = result.state;

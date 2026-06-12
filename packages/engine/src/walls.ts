@@ -10,12 +10,18 @@ export function wallInBounds(w: Wall): boolean {
 export function wallConflicts(existing: ReadonlySet<string>, w: Wall): boolean {
   if (existing.has(wallKey(w))) return true;
   // A perpendicular wall on the same intersection would cross it.
-  if (existing.has(`${w.o === 'h' ? 'v' : 'h'}${w.x},${w.y}`)) return true;
+  if (existing.has(wallKey({ x: w.x, y: w.y, o: w.o === 'h' ? 'v' : 'h' }))) return true;
   // Same-orientation walls one slot over share a cell span.
   if (w.o === 'h') {
-    return existing.has(`h${w.x - 1},${w.y}`) || existing.has(`h${w.x + 1},${w.y}`);
+    return (
+      existing.has(wallKey({ x: w.x - 1, y: w.y, o: 'h' })) ||
+      existing.has(wallKey({ x: w.x + 1, y: w.y, o: 'h' }))
+    );
   }
-  return existing.has(`v${w.x},${w.y - 1}`) || existing.has(`v${w.x},${w.y + 1}`);
+  return (
+    existing.has(wallKey({ x: w.x, y: w.y - 1, o: 'v' })) ||
+    existing.has(wallKey({ x: w.x, y: w.y + 1, o: 'v' }))
+  );
 }
 
 /** BFS over cells (walls block, pawns are ignored) to any cell of the goal edge. */
@@ -51,23 +57,32 @@ export type WallCheck =
 /**
  * Full legality check for placing `wall` as `playerIndex` (defaults to the current player):
  * walls remaining, bounds, structural conflicts, and a path-to-goal check for EVERY player.
+ * Throws RangeError for an out-of-range `playerIndex`. Does NOT check `state.status` —
+ * results are only meaningful while status === 'playing'. Callers checking many slots may
+ * pass a `prebuilt` wall set to skip rebuilding it per call; the set is restored before
+ * returning.
  */
 export function checkWallPlacement(
   state: GameState,
   wall: Wall,
   playerIndex: number = state.current,
+  prebuilt?: Set<string>,
 ): WallCheck {
   const me = state.players[playerIndex];
-  if (!me || me.wallsLeft <= 0) return { legal: false, reason: 'NO_WALLS_LEFT', trapped: [] };
+  if (!me) throw new RangeError(`checkWallPlacement: no player at index ${playerIndex}`);
+  if (me.wallsLeft <= 0) return { legal: false, reason: 'NO_WALLS_LEFT', trapped: [] };
   if (!wallInBounds(wall)) return { legal: false, reason: 'WALL_OUT_OF_BOUNDS', trapped: [] };
 
-  const walls = wallSetOf(state.walls);
+  const walls = prebuilt ?? wallSetOf(state.walls);
   if (wallConflicts(walls, wall)) return { legal: false, reason: 'WALL_OVERLAPS', trapped: [] };
 
   walls.add(wallKey(wall));
   const trapped = state.players
     .filter((p) => !hasPathToGoal(walls, p.pos, p.goal))
     .map((p) => p.seat);
+  // Restore a caller-provided set. Safe: wallConflicts above proved the key
+  // was not already present, so delete cannot remove a pre-existing wall.
+  walls.delete(wallKey(wall));
   if (trapped.length > 0) return { legal: false, reason: 'WALL_BLOCKS_PATH', trapped };
 
   return { legal: true };
@@ -78,11 +93,12 @@ export function getLegalWallSlots(state: GameState, playerIndex: number = state.
   const out: Wall[] = [];
   const me = state.players[playerIndex];
   if (state.status !== 'playing' || !me || me.wallsLeft <= 0) return out;
+  const walls = wallSetOf(state.walls);
   for (const o of ['h', 'v'] as const) {
     for (let y = 0; y < WALL_GRID; y++) {
       for (let x = 0; x < WALL_GRID; x++) {
         const w: Wall = { x, y, o };
-        if (checkWallPlacement(state, w, playerIndex).legal) out.push(w);
+        if (checkWallPlacement(state, w, playerIndex, walls).legal) out.push(w);
       }
     }
   }

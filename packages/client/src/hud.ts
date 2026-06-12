@@ -1,19 +1,10 @@
 import { rankPlayers } from '@quori/engine';
 import type { ActionError, GameState, WallCheck } from '@quori/engine';
 import { CHARACTER_META } from './characters';
+import { $, escapeHtml } from './dom';
 import type { PlayController } from './main';
 
-function $(id: string): HTMLElement {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing #${id}`);
-  return el;
-}
-
 const GOAL_ARROWS = { north: '⬆️', south: '⬇️', east: '➡️', west: '⬅️' } as const;
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
-}
 
 /** All DOM chrome around the canvas: player cards, status, history, toasts, results. */
 export class Hud {
@@ -95,7 +86,9 @@ export class Hud {
     const moveBtn = $('btn-mode-move') as HTMLButtonElement;
     const wallBtn = $('btn-mode-wall') as HTMLButtonElement;
     moveBtn.classList.toggle('active', mode === 'move');
+    moveBtn.setAttribute('aria-pressed', String(mode === 'move'));
     wallBtn.classList.toggle('active', mode === 'wall');
+    wallBtn.setAttribute('aria-pressed', String(mode === 'wall'));
     const me = state.players[state.current];
     $('wall-count').textContent = String(me.wallsLeft);
     const locked = state.status !== 'playing' || inputLocked;

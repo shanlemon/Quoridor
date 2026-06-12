@@ -1,3 +1,5 @@
+import { $ } from './dom';
+
 const SLIDES = [
   {
     emoji: '🐾',
@@ -24,12 +26,6 @@ const SLIDES = [
 const SEEN_KEY = 'quori-help-seen';
 let idx = 0;
 let onCloseCb: (() => void) | null = null;
-
-function $(id: string): HTMLElement {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing #${id}`);
-  return el;
-}
 
 function render(): void {
   const slide = SLIDES[idx];

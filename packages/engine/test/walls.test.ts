@@ -59,6 +59,12 @@ describe('wall bounds', () => {
   });
 });
 
+describe('checkWallPlacement misuse', () => {
+  it('throws RangeError for an out-of-range player index (like getLegalMoves)', () => {
+    expect(() => checkWallPlacement(createGame(2), H(3, 4), 5)).toThrow(RangeError);
+  });
+});
+
 describe('path-blocking detection', () => {
   // Pocket: pawn at (0,0); h(0,0) seals the south side of (0,0)+(1,0);
   // v(1,0) would seal the east side of (1,0) — trapping the pawn entirely.

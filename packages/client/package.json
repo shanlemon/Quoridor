@@ -12,6 +12,7 @@
   "dependencies": {
     "@quori/engine": "workspace:*",
     "@quori/protocol": "workspace:*",
+    "mitt": "^3.0.1",
     "pixi.js": "^8.6.0"
   },
   "devDependencies": {

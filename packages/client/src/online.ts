@@ -117,6 +117,9 @@ export class OnlineSession {
 
   private open(): Promise<void> {
     this.closedByUs = false;
+    // Close any superseded socket first; the stale guard below makes its
+    // close event a no-op.
+    this.ws?.close();
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl());
       this.ws = ws;
@@ -127,16 +130,21 @@ export class OnlineSession {
       };
       ws.onerror = () => reject(new Error('could not reach the game server'));
       ws.onmessage = (e) => this.onMessage(String(e.data));
-      ws.onclose = () => this.onClose();
+      ws.onclose = () => {
+        // Only the current socket may drive reconnect logic — a superseded or
+        // server-closed old socket must not trigger a spurious retry cycle.
+        if (this.ws === ws) this.onClose();
+      };
     });
   }
 
   private onClose(): void {
     this.ws = null;
-    if (this.closedByUs || !this.code) {
+    if (this.closedByUs) {
       this.cb.onConnection('gone');
       return;
     }
+    if (!this.code) return; // never joined a room: create()/join() rejection or a server 'err' already surfaced the failure
     // unexpected drop while in a room: reconnect with backoff for ~60s
     this.retryAttempt += 1;
     if (this.retryAttempt > 8) {
@@ -145,12 +153,15 @@ export class OnlineSession {
     }
     this.cb.onConnection('reconnecting');
     const delay = Math.min(8000, 500 * 2 ** this.retryAttempt);
+    if (this.retryTimer) clearTimeout(this.retryTimer); // defensive: never run two retry timers
     this.retryTimer = setTimeout(() => {
       void this.open()
         .then(() => {
           if (this.code) this.send({ t: 'join', code: this.code, name: this.name, token: sessionToken() });
         })
-        .catch(() => this.onClose());
+        // A failed connection always fires the socket's own 'close' event,
+        // which drives the next retry — no need to call onClose() here too.
+        .catch(() => {});
     }, delay);
   }
 

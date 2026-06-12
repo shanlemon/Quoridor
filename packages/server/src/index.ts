@@ -8,8 +8,9 @@
  *   proxy expects: one origin, relative URLs only).
  */
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import sirv from 'sirv';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { WebSocket } from 'ws';
@@ -21,16 +22,9 @@ const PORT = Number(process.env.PORT ?? 5174);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = process.env.CLIENT_DIST ?? path.resolve(HERE, '../../client/dist');
 
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.json': 'application/json',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-};
+// Created lazily so the server still starts (and recovers) when the client
+// isn't built yet — sirv scans the directory tree when constructed.
+let serveClient: ReturnType<typeof sirv> | null = null;
 
 const manager = new RoomManager();
 
@@ -52,28 +46,24 @@ async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): 
     return;
   }
   // static client
-  try {
-    let filePath = path.join(CLIENT_DIST, decodeURIComponent(url.pathname));
-    if (!filePath.startsWith(CLIENT_DIST)) {
-      res.writeHead(403).end();
-      return;
-    }
-    let s = await stat(filePath).catch(() => null);
-    if (!s || s.isDirectory()) {
-      filePath = path.join(CLIENT_DIST, 'index.html'); // SPA fallback
-      s = await stat(filePath).catch(() => null);
-      if (!s) {
-        res.writeHead(404, { 'content-type': 'text/plain' });
-        res.end('Client not built. Run: pnpm --filter @quori/client build');
-        return;
-      }
-    }
-    const body = await readFile(filePath);
-    res.writeHead(200, { 'content-type': MIME[path.extname(filePath)] ?? 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    res.writeHead(500).end();
+  if (!serveClient && existsSync(path.join(CLIENT_DIST, 'index.html'))) {
+    serveClient = sirv(CLIENT_DIST, {
+      single: true, // SPA fallback to index.html
+      etag: true,
+      setHeaders(res, pathname) {
+        // Vite's content-hashed output only — index.html must stay fresh.
+        if (pathname.startsWith('/assets/')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    });
   }
+  if (!serveClient) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('Client not built. Run: pnpm --filter @quori/client build');
+    return;
+  }
+  serveClient(req, res);
 }
 
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -93,6 +83,10 @@ function wrap(ws: WebSocket): Conn {
   };
 }
 
+// keepalive: terminate dead sockets so disconnect grace actually starts
+const HEARTBEAT_MS = 30_000;
+const alive = new WeakMap<WebSocket, boolean>();
+
 wss.on('connection', (ws) => {
   const session = manager.attach(wrap(ws));
   ws.on('message', (data) => {
@@ -104,12 +98,6 @@ wss.on('connection', (ws) => {
   });
   ws.on('close', () => session.onClose());
   ws.on('error', () => session.onClose());
-});
-
-// keepalive: terminate dead sockets so disconnect grace actually starts
-const HEARTBEAT_MS = 30_000;
-const alive = new WeakMap<WebSocket, boolean>();
-wss.on('connection', (ws) => {
   alive.set(ws, true);
   ws.on('pong', () => alive.set(ws, true));
 });

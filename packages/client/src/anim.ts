@@ -48,6 +48,12 @@ export function delay(ms: number): Promise<void> {
   return animate(ms, () => undefined, easings.linear);
 }
 
+/** Drop every pending tween and resolve its promise — called on board teardown. */
+export function clearAnimations(): void {
+  const drained = jobs.splice(0, jobs.length);
+  for (const j of drained) j.resolve();
+}
+
 /** Advance all running tweens. Call once per frame with the frame delta in ms. */
 export function tickAnimations(dtMs: number): void {
   for (let i = jobs.length - 1; i >= 0; i--) {

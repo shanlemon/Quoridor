@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>Quori Quest 🌸</title>
   </head>
@@ -10,12 +10,12 @@
     <div id="app">
       <header id="topbar">
         <div id="logo">🌸 Quori Quest</div>
-        <div id="status-text"></div>
+        <div id="status-text" role="status"></div>
         <div id="topbar-buttons">
-          <button id="btn-history" class="icon-btn" title="Move history">📜</button>
-          <button id="btn-mute" class="icon-btn" title="Sound on/off">🔊</button>
-          <button id="btn-help" class="icon-btn" title="How to play">❓</button>
-          <button id="btn-new" class="icon-btn" title="New game">🏠</button>
+          <button id="btn-history" class="icon-btn" title="Move history" aria-label="Move history" aria-controls="history-panel" aria-expanded="false">📜</button>
+          <button id="btn-mute" class="icon-btn" title="Sound on/off" aria-label="Sound on/off">🔊</button>
+          <button id="btn-help" class="icon-btn" title="How to play" aria-label="How to play">❓</button>
+          <button id="btn-new" class="icon-btn" title="New game" aria-label="New game">🏠</button>
         </div>
       </header>
       <main id="main">
@@ -23,8 +23,8 @@
         <section id="board-section">
           <div id="board-container"></div>
           <div id="mode-bar">
-            <button id="btn-mode-move" class="pill mode-pill active">🐾 Move</button>
-            <button id="btn-mode-wall" class="pill mode-pill">
+            <button id="btn-mode-move" class="pill mode-pill active" aria-pressed="true">🐾 Move</button>
+            <button id="btn-mode-wall" class="pill mode-pill" aria-pressed="false">
               🪵 Fence <span id="wall-count" class="count-chip"></span>
             </button>
           </div>
@@ -36,32 +36,32 @@
       </main>
     </div>
 
-    <div id="toast"></div>
+    <div id="toast" role="status"></div>
 
     <div id="setup-overlay" class="overlay">
       <div class="card setup-card">
         <h1>🌸 Quori Quest</h1>
         <p class="subtitle">A cozy garden race of fences &amp; friends</p>
         <div id="mode-tabs" class="pill-row">
-          <button id="tab-local" class="pill active">🏠 Local</button>
-          <button id="tab-online" class="pill">🌐 Online</button>
+          <button id="tab-local" class="pill active" aria-pressed="true">🏠 Local</button>
+          <button id="tab-online" class="pill" aria-pressed="false">🌐 Online</button>
         </div>
 
         <div id="setup-local">
           <h3>Who's playing?</h3>
           <div id="setup-players" class="pill-row">
-            <button class="pill seat-pill active" data-count="2">2 🐰🐸</button>
-            <button class="pill seat-pill" data-count="3">3 🐰🐸🐱</button>
-            <button class="pill seat-pill" data-count="4">4 🐰🐸🐱🐧</button>
+            <button class="pill seat-pill active" data-count="2" aria-pressed="true">2 🐰🐸</button>
+            <button class="pill seat-pill" data-count="3" aria-pressed="false">3 🐰🐸🐱</button>
+            <button class="pill seat-pill" data-count="4" aria-pressed="false">4 🐰🐸🐱🐧</button>
           </div>
           <h3>Who plays whom?</h3>
           <div id="setup-seats"></div>
           <h3>Turn timer</h3>
           <div id="setup-timer" class="pill-row">
-            <button class="pill timer-pill active" data-timer="0">Off</button>
-            <button class="pill timer-pill" data-timer="30">30s</button>
-            <button class="pill timer-pill" data-timer="60">60s</button>
-            <button class="pill timer-pill" data-timer="90">90s</button>
+            <button class="pill timer-pill active" data-timer="0" aria-pressed="true">Off</button>
+            <button class="pill timer-pill" data-timer="30" aria-pressed="false">30s</button>
+            <button class="pill timer-pill" data-timer="60" aria-pressed="false">60s</button>
+            <button class="pill timer-pill" data-timer="90" aria-pressed="false">90s</button>
           </div>
           <button id="btn-start" class="big-btn">Start the Quest! 🌷</button>
           <p class="hint">Hotseat play — pass the mouse, everyone shares this screen.</p>
@@ -70,20 +70,20 @@
         <div id="setup-online" class="hidden">
           <div id="online-entry">
             <h3>Your name</h3>
-            <input id="online-name" class="text-input" maxlength="20" placeholder="Garden friend" />
+            <input id="online-name" class="text-input" maxlength="20" placeholder="Garden friend" aria-label="Your name" />
             <div class="pill-row">
               <button id="btn-create-room" class="big-btn">Create a room ✨</button>
             </div>
             <h3>or join a friend's room</h3>
             <div class="pill-row">
-              <input id="online-code" class="text-input code-input" maxlength="4" placeholder="CODE" />
+              <input id="online-code" class="text-input code-input" maxlength="4" placeholder="CODE" aria-label="Room code" />
               <button id="btn-join-room" class="pill">Join ➜</button>
             </div>
             <p id="online-error" class="hint error-hint"></p>
             <p class="hint">Played in a Discord voice channel later (M4) — for now share the room code.</p>
           </div>
           <div id="online-lobby" class="hidden">
-            <h3>Room code <span id="lobby-code" class="code-chip" title="Click to copy"></span></h3>
+            <h3>Room code <button id="lobby-code" class="code-chip" title="Click to copy" aria-label="Copy room code"></button></h3>
             <div id="lobby-members"></div>
             <div id="lobby-config"></div>
             <div class="pill-row">

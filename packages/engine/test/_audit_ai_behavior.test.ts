@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyAction,
+  bestAutoMove,
   checkWallPlacement,
   chooseBotAction,
   createGame,
@@ -26,6 +27,7 @@ import {
 } from '../src/index';
 import type { Action, BotLevel, GameState, Wall } from '../src/index';
 import { makeState } from './helpers';
+import type { PlayerSpec } from './helpers';
 
 /** Deterministic PRNG (same as ai.test.ts) so runs are reproducible. */
 function mulberry32(seed: number): () => number {
@@ -248,6 +250,63 @@ describe("a bot never chooses 'pass' while something legal exists", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Easy bot forced-progress beat fires per OWN turn, not per global turnSeq
+// ---------------------------------------------------------------------------
+describe("easy bot's forced-progress beat is keyed to its own turns", () => {
+  // Seat 1 sits mid-edge on an empty board: its sideways moves keep the goal
+  // distance unchanged, so it is wander-eligible. constRng(0.1) is always
+  // below the 0.25 wander threshold and picks sideways index 0. On seat 1's
+  // k-th own turn turnSeq = 1 + k * numPlayers, so floor(turnSeq/numPlayers)
+  // = k and the beat must be forced exactly when k % 3 === 0, for every
+  // player count. (The old global `turnSeq % 3` gate had a residue that was
+  // CONSTANT per seat in 3p games: seat 0 was always forced — never wandered
+  // — and seats 1/2 were never forced.)
+  const base = (players: 2 | 3 | 4): GameState => {
+    const specs: Record<2 | 3 | 4, PlayerSpec[]> = {
+      2: [
+        { pos: { x: 4, y: 0 }, goal: 'south' },
+        { pos: { x: 4, y: 8 }, goal: 'north' },
+      ],
+      3: [
+        { pos: { x: 4, y: 0 }, goal: 'south' },
+        { pos: { x: 0, y: 4 }, goal: 'east' },
+        { pos: { x: 4, y: 8 }, goal: 'north' },
+      ],
+      4: [
+        { pos: { x: 4, y: 0 }, goal: 'south' },
+        { pos: { x: 0, y: 4 }, goal: 'east' },
+        { pos: { x: 4, y: 8 }, goal: 'north' },
+        { pos: { x: 8, y: 4 }, goal: 'west' },
+      ],
+    };
+    return makeState(specs[players], { current: 1 });
+  };
+  const at = (s: GameState, turnSeq: number): GameState => ({ ...s, turnSeq });
+
+  it.each([2, 3, 4] as const)(
+    "%ip: seat 1's own-turn 0 (turnSeq = 1) is forced onto the shortest path",
+    (players) => {
+      const s = at(base(players), 1);
+      const mv = bestAutoMove(s, 1);
+      expect(mv).not.toBeNull();
+      expect(chooseBotAction(s, 'easy', constRng(0.1))).toEqual({ type: 'move', to: mv });
+    },
+  );
+
+  it.each([
+    [2, 3],
+    [3, 4],
+    [4, 5],
+  ] as const)("%ip: seat 1's own-turn 1 (turnSeq = %i) may wander sideways", (players, turnSeq) => {
+    const s = at(base(players), turnSeq);
+    const mv = bestAutoMove(s, 1);
+    const action = chooseBotAction(s, 'easy', constRng(0.1));
+    expect(action.type).toBe('move');
+    if (action.type === 'move') expect(action.to).not.toEqual(mv);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4. Termination / livelock + 5. all returned actions are engine-legal
 // ---------------------------------------------------------------------------
 describe('bot-vs-bot games terminate and stay legal', () => {
@@ -269,6 +328,19 @@ describe('bot-vs-bot games terminate and stay legal', () => {
     { timeout: 60_000 },
     async (c) => {
       const final = await playGame(['easy', 'easy'], constRng(c));
+      expect(final.status).toBe('finished');
+    },
+  );
+
+  // Supplementary (NOT the discriminating regression for the per-own-turn
+  // forced beat — the gate unit tests above are; this whole-game audit passes
+  // even when seats 1/2 are never forced, because the residue-0 seat races
+  // and wins): 3p all-easy games under degenerate constant rngs terminate.
+  it.each([0, 0.1, 0.2, 0.3, 0.5, 0.75, 0.99] as const)(
+    '3p easy vs easy vs easy terminates with constant rng %f',
+    { timeout: 60_000 },
+    async (c) => {
+      const final = await playGame(['easy', 'easy', 'easy'], constRng(c), 600, 3);
       expect(final.status).toBe('finished');
     },
   );

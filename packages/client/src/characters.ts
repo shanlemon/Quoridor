@@ -10,11 +10,13 @@ export interface CharacterMeta {
   icon: string;
 }
 
+const cssOf = (color: number): string => `#${color.toString(16).padStart(6, '0')}`;
+
 export const CHARACTER_META: Record<CharacterId, CharacterMeta> = {
-  mochi: { name: 'Mochi', emoji: '🐰', color: 0xf06ba8, colorCss: '#f06ba8', icon: '♥' },
-  pebble: { name: 'Pebble', emoji: '🐸', color: 0x4cb04f, colorCss: '#4cb04f', icon: '★' },
-  biscuit: { name: 'Biscuit', emoji: '🐱', color: 0xf09030, colorCss: '#f09030', icon: '✿' },
-  tofu: { name: 'Tofu', emoji: '🐧', color: 0x4a90e2, colorCss: '#4a90e2', icon: '❆' },
+  mochi: { name: 'Mochi', emoji: '🐰', color: 0xf06ba8, colorCss: cssOf(0xf06ba8), icon: '♥' },
+  pebble: { name: 'Pebble', emoji: '🐸', color: 0x4cb04f, colorCss: cssOf(0x4cb04f), icon: '★' },
+  biscuit: { name: 'Biscuit', emoji: '🐱', color: 0xf09030, colorCss: cssOf(0xf09030), icon: '✿' },
+  tofu: { name: 'Tofu', emoji: '🐧', color: 0x4a90e2, colorCss: cssOf(0x4a90e2), icon: '❆' },
 };
 
 function eyes(g: Graphics, y: number, spread: number, r: number): void {

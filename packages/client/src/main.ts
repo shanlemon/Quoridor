@@ -6,6 +6,7 @@ import { BoardView } from './board-view';
 import type { BoardMode } from './board-view';
 import { CHARACTER_META } from './characters';
 import { GameController } from './controller';
+import { $, escapeHtml } from './dom';
 import type { NetworkController } from './net-controller';
 import { OnlineSession } from './online';
 import type { LobbyState } from './online';
@@ -15,18 +16,14 @@ import { sfx } from './sfx';
 
 export type PlayController = GameController | NetworkController;
 
-function $(id: string): HTMLElement {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing #${id}`);
-  return el;
-}
-
 const hud = new Hud();
 let controller: PlayController | null = null;
 let board: BoardView | null = null;
 let mode: BoardMode = 'move';
 let timerLeft: number | null = null;
 let online: OnlineSession | null = null;
+/** Last markup written to #lobby-config — skip rewrites (and focus loss) on roster-only broadcasts. */
+let lastLobbyConfigHtml = '';
 
 // Local setup choices
 let playerCount: PlayerCount = 2;
@@ -60,7 +57,7 @@ function refresh(): void {
   if (!controller || !board) return;
   const state = controller.state;
   const locked = controller.inputLocked();
-  hud.renderPlayers(controller, state.status === 'playing' && !locked ? timerLeft : null);
+  hud.renderPlayers(controller, state.status === 'playing' && controller.lockKind() !== 'bot' ? timerLeft : null);
   hud.updateStatus(state, mode, controller.lockKind(), controller.currentActorName());
   hud.updateModeBar(state, mode, locked);
   hud.renderHistory(controller);
@@ -115,6 +112,9 @@ function setMode(next: BoardMode): void {
 }
 
 function wireController(c: PlayController): void {
+  // A reused controller (online resync/rematch) keeps its old handler set
+  // otherwise — clear before rewiring so exactly one set fires per event.
+  c.removeAllListeners();
   const myGen = gen;
 
   c.on('moved', ({ seat, from, to, auto }) => {
@@ -169,7 +169,7 @@ function wireController(c: PlayController): void {
   c.on('timer', ({ secondsLeft }) => {
     if (gen !== myGen) return;
     timerLeft = secondsLeft;
-    if (c.state.status === 'playing' && pendingAnims === 0 && !c.inputLocked()) {
+    if (c.state.status === 'playing' && pendingAnims === 0 && c.lockKind() !== 'bot') {
       hud.renderPlayers(c, timerLeft);
     }
   });
@@ -180,6 +180,8 @@ function wireController(c: PlayController): void {
       mode = 'move';
       refresh();
       await board?.celebrateWin(winner);
+      // A new game may have mounted during the multi-second celebration.
+      if (gen !== myGen) return;
       // Don't stack the results dialog over an open setup dialog.
       if ($('setup-overlay').classList.contains('hidden')) hud.showGameOver(c);
     });
@@ -195,7 +197,7 @@ function wireController(c: PlayController): void {
 
 /** Tear down the previous game and mount a board for the given controller. */
 async function mountGame(c: PlayController): Promise<void> {
-  gen++;
+  const myGen = ++gen;
   $('setup-overlay').classList.add('hidden');
   $('gameover-overlay').classList.add('hidden');
 
@@ -209,7 +211,7 @@ async function mountGame(c: PlayController): Promise<void> {
   const host = $('board-container');
   host.querySelectorAll('canvas').forEach((cv) => cv.remove());
 
-  board = await BoardView.create(host, c.state, {
+  const view = await BoardView.create(host, c.state, {
     onMoveTap: (cell) => {
       if (c.state.status !== 'playing' || c.inputLocked()) return;
       if (c.legalMoves().some((m) => m.x === cell.x && m.y === cell.y)) {
@@ -229,6 +231,12 @@ async function mountGame(c: PlayController): Promise<void> {
     },
     onCancel: () => setMode('move'),
   });
+  // Another mount may have superseded this one during the async create.
+  if (gen !== myGen) {
+    view.destroy();
+    return;
+  }
+  board = view;
 
   wireController(c);
   refresh();
@@ -307,6 +315,7 @@ function leaveOnlineIfAny(): void {
     online.leave();
     online = null;
   }
+  lastLobbyConfigHtml = ''; // a fresh room must always render its config
   showLobbyPanel(false);
 }
 
@@ -375,8 +384,8 @@ function renderLobby(lobby: LobbyState): void {
 
   const cfg = lobby.config;
   const pill = (label: string, active: boolean, attrs: string): string =>
-    `<button class="pill ${active ? 'active' : ''}" ${isHost ? '' : 'disabled'} ${attrs}>${label}</button>`;
-  $('lobby-config').innerHTML = `
+    `<button class="pill ${active ? 'active' : ''}" aria-pressed="${active}" ${isHost ? '' : 'disabled'} ${attrs}>${label}</button>`;
+  const configHtml = `
     <h3>Seats</h3>
     <div class="pill-row" data-cfg="seats">
       ${[2, 3, 4].map((n) => pill(`${n}`, cfg.seats === n, `data-seats="${n}"`)).join('')}
@@ -398,20 +407,11 @@ function renderLobby(lobby: LobbyState): void {
         .map(([lvl, label]) => pill(label, cfg.botFill === lvl, `data-botfill="${lvl ?? 'none'}"`))
         .join('')}
     </div>`;
-
-  if (isHost) {
-    $('lobby-config').querySelectorAll('button').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const next: RoomConfig = { ...cfg };
-        if (btn.dataset.seats) next.seats = Number(btn.dataset.seats) as RoomConfig['seats'];
-        if (btn.dataset.timer !== undefined)
-          next.timerSeconds = Number(btn.dataset.timer) as RoomConfig['timerSeconds'];
-        if (btn.dataset.botfill)
-          next.botFill = btn.dataset.botfill === 'none' ? null : (btn.dataset.botfill as BotLevel);
-        sfx.pick();
-        online?.sendConfig(next);
-      });
-    });
+  // Compare against the last string we wrote (not live innerHTML, which the
+  // browser normalizes) so roster-only broadcasts don't rebuild the pills.
+  if (configHtml !== lastLobbyConfigHtml) {
+    lastLobbyConfigHtml = configHtml;
+    $('lobby-config').innerHTML = configHtml;
   }
 
   const startBtn = $('btn-online-start') as HTMLButtonElement;
@@ -429,10 +429,6 @@ function renderLobby(lobby: LobbyState): void {
     $('lobby-hint').textContent = 'Game in progress — you will join as a spectator.';
     startBtn.style.display = 'none';
   }
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
 function initOnlineUi(): void {
@@ -473,6 +469,21 @@ function initOnlineUi(): void {
     online.join(code, name).catch(() => onlineError('Could not reach the game server — is it running?'));
   });
 
+  // One delegated listener for the host's config pills (markup is re-rendered
+  // per broadcast; reading online.lobby here always sees the freshest config).
+  $('lobby-config').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('button');
+    if (!btn || btn.disabled || !online?.lobby || !online.isHost()) return;
+    const next: RoomConfig = { ...online.lobby.config };
+    if (btn.dataset.seats) next.seats = Number(btn.dataset.seats) as RoomConfig['seats'];
+    if (btn.dataset.timer !== undefined)
+      next.timerSeconds = Number(btn.dataset.timer) as RoomConfig['timerSeconds'];
+    if (btn.dataset.botfill)
+      next.botFill = btn.dataset.botfill === 'none' ? null : (btn.dataset.botfill as BotLevel);
+    sfx.pick();
+    online.sendConfig(next);
+  });
+
   $('btn-online-start').addEventListener('click', () => online?.start());
   $('btn-leave-room').addEventListener('click', () => {
     leaveOnlineIfAny();
@@ -489,7 +500,9 @@ function initOnlineUi(): void {
 
 function switchTab(tab: 'local' | 'online'): void {
   $('tab-local').classList.toggle('active', tab === 'local');
+  $('tab-local').setAttribute('aria-pressed', String(tab === 'local'));
   $('tab-online').classList.toggle('active', tab === 'online');
+  $('tab-online').setAttribute('aria-pressed', String(tab === 'online'));
   $('setup-local').classList.toggle('hidden', tab !== 'local');
   $('setup-online').classList.toggle('hidden', tab !== 'online');
   sfx.pick();
@@ -499,8 +512,12 @@ function switchTab(tab: 'local' | 'online'): void {
 
 function initSetup(): void {
   const pickPill = (row: HTMLElement, target: HTMLElement): void => {
-    row.querySelectorAll('.pill').forEach((p) => p.classList.remove('active'));
+    row.querySelectorAll('.pill').forEach((p) => {
+      p.classList.remove('active');
+      p.setAttribute('aria-pressed', 'false');
+    });
     target.classList.add('active');
+    target.setAttribute('aria-pressed', 'true');
     sfx.pick();
   };
   $('setup-players').addEventListener('click', (e) => {
@@ -547,6 +564,7 @@ function initTopbar(): void {
   $('btn-history').addEventListener('click', () => {
     const panel = $('history-panel');
     panel.classList.toggle('open');
+    $('btn-history').setAttribute('aria-expanded', String(panel.classList.contains('open')));
     if (panel.classList.contains('open')) panel.scrollTop = panel.scrollHeight;
   });
   const muteBtn = $('btn-mute');
@@ -576,7 +594,10 @@ function initTopbar(): void {
     else if (e.key === 'm') setMode('move');
   });
 
-  if (window.innerWidth >= 1100) $('history-panel').classList.add('open');
+  if (window.innerWidth >= 1100) {
+    $('history-panel').classList.add('open');
+    $('btn-history').setAttribute('aria-expanded', 'true');
+  }
 }
 
 initSetup();

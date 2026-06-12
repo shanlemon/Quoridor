@@ -16,7 +16,7 @@
     "build": "pnpm -r build",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "check": "pnpm test && pnpm typecheck && pnpm build"
+    "check": "pnpm lint && pnpm test && pnpm typecheck && pnpm build"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",

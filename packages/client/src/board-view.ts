@@ -1,7 +1,7 @@
 import { Application, Container, Graphics, Point, Text } from 'pixi.js';
 import type { FederatedPointerEvent } from 'pixi.js';
 import type { Cell, CharacterId, GameState, Orientation, Wall, WallCheck } from '@quori/engine';
-import { animate, delay, easings, lerp, tickAnimations } from './anim';
+import { animate, clearAnimations, delay, easings, lerp, tickAnimations } from './anim';
 import { CHARACTER_META, createCharacter } from './characters';
 
 /**
@@ -29,6 +29,8 @@ const ISO_H = ISO_DIAMOND_H + TOP_PAD + BOTTOM_PAD;
 
 const TILE_DEPTH = 12;
 const WALL_H = 30;
+const FENCE_DROP = 44; // px the fence drops from when placed
+const SHADOW_INK = 0x4d3a2a; // shared ground-shadow color
 
 function iso(u: number, v: number, z = 0): { x: number; y: number } {
   return { x: (u - v) * KX, y: (u + v) * KY - z };
@@ -57,6 +59,19 @@ function vquad(au: number, av: number, bu: number, bv: number, z0: number, z1: n
   const p3 = iso(bu, bv, z1);
   const p4 = iso(au, av, z1);
   return [p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y];
+}
+
+/** Axis-aligned board-space rectangle at elevation z (corners u0,v0 -> u1,v1). */
+function rectPoly(u0: number, v0: number, u1: number, v1: number, z: number): number[] {
+  return flatPoly(
+    [
+      [u0, v0],
+      [u1, v0],
+      [u1, v1],
+      [u0, v1],
+    ],
+    z,
+  );
 }
 
 export type BoardMode = 'move' | 'wall';
@@ -159,7 +174,7 @@ export class BoardView {
     this.drawBoard(state);
     for (const p of state.players) this.spawnPawn(p.seat, p.character, p.pos);
     this.drawCrown();
-    for (const w of state.walls) this.sceneLayer.addChild(this.buildFence(w));
+    for (const w of state.walls) this.sceneLayer.addChild(...this.buildFenceHalves(w));
 
     // input
     this.app.stage.eventMode = 'static';
@@ -235,17 +250,7 @@ export class BoardView {
     // garden mat: one big extruded block under everything
     const m0 = MARGIN - 16;
     const m1 = BOARDU - MARGIN + 16;
-    g.poly(
-      flatPoly(
-        [
-          [m0, m0],
-          [m1, m0],
-          [m1, m1],
-          [m0, m1],
-        ],
-        -TILE_DEPTH,
-      ),
-    ).fill(0xb6dd94);
+    g.poly(rectPoly(m0, m0, m1, m1, -TILE_DEPTH)).fill(0xb6dd94);
     g.poly(vquad(m0, m1, m1, m1, -TILE_DEPTH - 16, -TILE_DEPTH)).fill(0x8aa968);
     g.poly(vquad(m1, m1, m1, m0, -TILE_DEPTH - 16, -TILE_DEPTH)).fill(0x79965b);
 
@@ -259,17 +264,7 @@ export class BoardView {
         const top = (x + y) % 2 === 0 ? 0xdcf3b7 : 0xd2ecab;
         g.poly(vquad(u0, v1, u1, v1, -TILE_DEPTH, 0)).fill(0xa3c47e); // lower-left face
         g.poly(vquad(u1, v1, u1, v0, -TILE_DEPTH, 0)).fill(0x8fb06c); // lower-right face
-        g.poly(
-          flatPoly(
-            [
-              [u0, v0],
-              [u1, v0],
-              [u1, v1],
-              [u0, v1],
-            ],
-            0,
-          ),
-        ).fill(top);
+        g.poly(rectPoly(u0, v0, u1, v1, 0)).fill(top);
       }
     }
     this.tileLayer.addChild(g);
@@ -290,17 +285,7 @@ export class BoardView {
         const u0 = MARGIN + c.x * PITCH;
         const v0 = MARGIN + c.y * PITCH;
         tint
-          .poly(
-            flatPoly(
-              [
-                [u0, v0],
-                [u0 + CELL, v0],
-                [u0 + CELL, v0 + CELL],
-                [u0, v0 + CELL],
-              ],
-              0,
-            ),
-          )
+          .poly(rectPoly(u0, v0, u0 + CELL, v0 + CELL, 0))
           .fill({ color: meta.color, alpha: 0.18 });
       }
       this.tileLayer.addChild(tint);
@@ -326,7 +311,7 @@ export class BoardView {
     const pole = new Graphics();
     pole.poly(vquad(pos.u - 2, pos.v, pos.u + 2, pos.v, 0, 44)).fill(0x9a7b53);
     const base = iso(pos.u, pos.v, 0);
-    pole.ellipse(base.x, base.y, 9, 4.5).fill({ color: 0x4d3a2a, alpha: 0.25 });
+    pole.ellipse(base.x, base.y, 9, 4.5).fill({ color: SHADOW_INK, alpha: 0.25 });
     banner.addChild(pole);
 
     const badgeAt = iso(pos.u, pos.v, 52);
@@ -357,7 +342,7 @@ export class BoardView {
     root.zIndex = u + v;
 
     const shadow = new Graphics();
-    shadow.ellipse(0, 2, CHAR_SIZE * 0.42, CHAR_SIZE * 0.16).fill({ color: 0x4d3a2a, alpha: 0.3 });
+    shadow.ellipse(0, 2, CHAR_SIZE * 0.42, CHAR_SIZE * 0.16).fill({ color: SHADOW_INK, alpha: 0.3 });
     root.addChild(shadow);
 
     const body = new Container();
@@ -402,18 +387,9 @@ export class BoardView {
       const { u, v } = this.cellU(cell);
       const c = iso(u, v, 1);
       const half = CELL / 2 - 10;
-      const corners: Array<[number, number]> = [
-        [u - half, v - half],
-        [u + half, v - half],
-        [u + half, v + half],
-        [u - half, v + half],
-      ];
       // drawn relative to the cell center so the pulse scales in place
-      const pts: number[] = [];
-      for (const [cu, cv] of corners) {
-        const p = iso(cu, cv, 1);
-        pts.push(p.x - c.x, p.y - c.y);
-      }
+      const abs = rectPoly(u - half, v - half, u + half, v + half, 1);
+      const pts = abs.map((n, i) => (i % 2 === 0 ? n - c.x : n - c.y));
       const dot = new Graphics();
       dot.poly(pts).fill({ color, alpha: 0.22 }).stroke({ width: 2.5, color, alpha: 0.85 });
       dot.ellipse(0, 0, 9, 4.5).fill({ color, alpha: 0.9 }).stroke({ width: 2, color: 0xffffff });
@@ -463,14 +439,14 @@ export class BoardView {
   // ---------- fences ----------
 
   /**
-   * A picket fence spanning 2 cells, standing upright in iso space.
+   * A picket fence spanning 2 cells, standing upright in iso space, built as
+   * TWO half-span containers so each half depth-sorts by its own midpoint.
+   * (A single full-span fence ties a pawn one cell nearer on zIndex, and the
+   * stable sort then resolves the tie by insertion order — fence over pawn.)
    * Drawn in WHITE so ghost tinting works multiplicatively.
    */
-  private buildFence(w: Wall): Container {
-    const cont = new Container();
+  private buildFenceHalves(w: Wall): [Container, Container] {
     const center = this.wallU(w);
-    cont.zIndex = center.u + center.v;
-    const g = new Graphics();
     const len = CELL * 2 + GAP;
     const along: { du: number; dv: number } = w.o === 'h' ? { du: 1, dv: 0 } : { du: 0, dv: 1 };
     const su = center.u - (along.du * len) / 2;
@@ -478,51 +454,66 @@ export class BoardView {
     const eu = center.u + (along.du * len) / 2;
     const ev = center.v + (along.dv * len) / 2;
 
-    // soft ground shadow
-    const sh0 = iso(su, sv, 0);
-    const sh1 = iso(eu, ev, 0);
-    g.moveTo(sh0.x, sh0.y)
-      .lineTo(sh1.x, sh1.y)
-      .stroke({ width: 9, color: 0x4d3a2a, alpha: 0.18, cap: 'round' });
+    const buildHalf = (
+      au: number,
+      av: number,
+      bu: number,
+      bv: number,
+      postTs: readonly number[],
+    ): Container => {
+      const cont = new Container();
+      // depth-sort by this half's own midpoint
+      cont.zIndex = (au + bu) / 2 + (av + bv) / 2;
+      const g = new Graphics();
 
-    // rails (two horizontal slats along the span)
-    for (const [z0, z1] of [
-      [9, 15],
-      [19, 25],
-    ] as const) {
-      g.poly(vquad(su, sv, eu, ev, z0, z1))
-        .fill(0xfffaf2)
-        .stroke({ width: 1.4, color: 0xd9c4a4 });
-    }
+      // soft ground shadow (this half-span only)
+      const sh0 = iso(au, av, 0);
+      const sh1 = iso(bu, bv, 0);
+      g.moveTo(sh0.x, sh0.y)
+        .lineTo(sh1.x, sh1.y)
+        .stroke({ width: 9, color: SHADOW_INK, alpha: 0.18, cap: 'round' });
 
-    // posts: small boxes at 0, 1/3, 2/3, 1 of the span
-    const half = 4;
-    for (const t of [0.06, 0.37, 0.63, 0.94]) {
-      const pu = su + (eu - su) * t;
-      const pv = sv + (ev - sv) * t;
-      // two visible faces + top
-      g.poly(vquad(pu - half, pv + half, pu + half, pv + half, 0, WALL_H))
-        .fill(0xffffff)
-        .stroke({ width: 1.2, color: 0xd9c4a4 });
-      g.poly(vquad(pu + half, pv + half, pu + half, pv - half, 0, WALL_H))
-        .fill(0xe8ddc8)
-        .stroke({ width: 1.2, color: 0xd9c4a4 });
-      g.poly(
-        flatPoly(
-          [
-            [pu - half, pv - half],
-            [pu + half, pv - half],
-            [pu + half, pv + half],
-            [pu - half, pv + half],
-          ],
-          WALL_H,
-        ),
-      )
-        .fill(0xffffff)
-        .stroke({ width: 1.2, color: 0xd9c4a4 });
-    }
+      // rails (two horizontal slats along this half-span)
+      for (const [z0, z1] of [
+        [9, 15],
+        [19, 25],
+      ] as const) {
+        g.poly(vquad(au, av, bu, bv, z0, z1))
+          .fill(0xfffaf2)
+          .stroke({ width: 1.4, color: 0xd9c4a4 });
+      }
 
-    cont.addChild(g);
+      // posts: small boxes at the given fractions of the FULL span
+      const half = 4;
+      for (const t of postTs) {
+        const pu = su + (eu - su) * t;
+        const pv = sv + (ev - sv) * t;
+        // two visible faces + top
+        g.poly(vquad(pu - half, pv + half, pu + half, pv + half, 0, WALL_H))
+          .fill(0xffffff)
+          .stroke({ width: 1.2, color: 0xd9c4a4 });
+        g.poly(vquad(pu + half, pv + half, pu + half, pv - half, 0, WALL_H))
+          .fill(0xe8ddc8)
+          .stroke({ width: 1.2, color: 0xd9c4a4 });
+        g.poly(rectPoly(pu - half, pv - half, pu + half, pv + half, WALL_H))
+          .fill(0xffffff)
+          .stroke({ width: 1.2, color: 0xd9c4a4 });
+      }
+
+      cont.addChild(g);
+      return cont;
+    };
+
+    return [
+      buildHalf(su, sv, center.u, center.v, [0.06, 0.37]),
+      buildHalf(center.u, center.v, eu, ev, [0.63, 0.94]),
+    ];
+  }
+
+  /** One-container fence wrapper — used only for the ghost preview, which must tint/wiggle as a unit. */
+  private buildFence(w: Wall): Container {
+    const cont = new Container();
+    cont.addChild(...this.buildFenceHalves(w));
     return cont;
   }
 
@@ -530,18 +521,23 @@ export class BoardView {
     if (this.destroyed) return;
     this.busy = true;
     this.clearGhost();
-    const fence = this.buildFence(w);
-    fence.alpha = 0;
-    fence.position.y = -44;
-    this.sceneLayer.addChild(fence);
+    const halves = this.buildFenceHalves(w);
+    for (const h of halves) {
+      h.alpha = 0;
+      h.position.y = -FENCE_DROP;
+      this.sceneLayer.addChild(h);
+    }
     await animate(
       240,
       (k) => {
-        fence.position.y = -44 * (1 - k);
-        fence.alpha = Math.min(1, k * 2);
+        for (const h of halves) {
+          h.position.y = -FENCE_DROP * (1 - k);
+          h.alpha = Math.min(1, k * 2);
+        }
       },
       easings.inQuad,
     );
+    if (this.destroyed) return; // torn down mid-drop
     const c = this.wallU(w);
     const p = iso(c.u, c.v, 0);
     this.dustPuff(p.x, p.y, 7);
@@ -549,6 +545,7 @@ export class BoardView {
     await animate(170, (k) => {
       this.shakeAmp = 3 * (1 - k);
     });
+    if (this.destroyed) return;
     this.shakeAmp = 0;
     this.layout(); // restore the exact centered world position after the shake
     this.busy = false;
@@ -573,6 +570,7 @@ export class BoardView {
 
     // anticipate (squash)
     await animate(70, (k) => pawn.body.scale.set(1 + 0.13 * k, 1 - 0.2 * k), easings.outQuad);
+    if (this.destroyed) return; // teardown resolves tweens early — don't chain the next one
     // leap
     await animate(
       170 + 70 * dist,
@@ -585,9 +583,11 @@ export class BoardView {
       },
       easings.inOutSine,
     );
+    if (this.destroyed) return;
     // land (squash + recover)
     this.dustPuff(dest.x, dest.y, 4);
     await animate(60, (k) => pawn.body.scale.set(1 + 0.16 * k, 1 - 0.22 * k), easings.outQuad);
+    if (this.destroyed) return;
     await animate(
       170,
       (k) => {
@@ -595,6 +595,7 @@ export class BoardView {
       },
       easings.outBack,
     );
+    if (this.destroyed) return;
     pawn.body.scale.set(1, 1);
     pawn.shadow.scale.set(1);
     pawn.shadow.alpha = 1;
@@ -632,12 +633,14 @@ export class BoardView {
         },
         easings.outCubic,
       );
+      if (this.destroyed) return; // teardown resolves tweens early — don't chain the next one
       this.confettiBurst(center.x, center.y - 80);
       for (let i = 0; i < 3; i++) {
         await animate(190, (k) => {
           winner.root.position.y = center.y - 26 * Math.sin(Math.PI * k);
           winner.body.scale.set(1 - 0.1 * Math.sin(Math.PI * k), 1 + 0.14 * Math.sin(Math.PI * k));
         });
+        if (this.destroyed) return;
       }
       this.confettiBurst(center.x, center.y - 60);
       await delay(420);
@@ -732,13 +735,14 @@ export class BoardView {
       d.scale.set(1 + 0.1 * Math.sin(t * 0.006 + i * 0.8));
     });
 
+    const f = dt / 16.7; // 60fps frame normalizer
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.life += dt;
-      p.g.position.x += p.vx * (dt / 16.7);
-      p.g.position.y += p.vy * (dt / 16.7);
-      p.vy += 0.22 * (dt / 16.7);
-      p.g.rotation += p.vr * (dt / 16.7);
+      p.g.position.x += p.vx * f;
+      p.g.position.y += p.vy * f;
+      p.vy += 0.22 * f;
+      p.g.rotation += p.vr * f;
       p.g.alpha = Math.max(0, 1 - p.life / p.maxLife);
       if (p.life >= p.maxLife || p.g.position.y > ISO_DIAMOND_H + 80) {
         p.g.destroy();
@@ -752,7 +756,7 @@ export class BoardView {
     }
     for (let i = this.leaves.length - 1; i >= 0; i--) {
       const leaf = this.leaves[i];
-      leaf.position.y += 0.55 * (dt / 16.7);
+      leaf.position.y += 0.55 * f;
       leaf.position.x += Math.sin(t * 0.0012 + i * 2) * 0.5;
       leaf.rotation = 0.6 * Math.sin(t * 0.0015 + i);
       if (leaf.position.y > ISO_DIAMOND_H + 40) {
@@ -845,6 +849,9 @@ export class BoardView {
   }
 
   destroy(): void {
+    // Drain the module-global tween registry first: pending tweens would
+    // otherwise be ticked by the NEXT board against destroyed objects.
+    clearAnimations();
     this.destroyed = true;
     this.resizeObs.disconnect();
     this.app.destroy({ removeView: true }, { children: true, texture: true });

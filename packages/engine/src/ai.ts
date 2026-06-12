@@ -1,8 +1,8 @@
-import type { Action, Edge, GameState, PlayerState } from './types';
+import type { Action, Edge, GameState, PlayerState, Wall } from './types';
 import { WALL_GRID } from './types';
 import { cellEq, isGoalCell, wallKey, wallSetOf } from './board';
 import { getLegalMoves } from './moves';
-import { checkWallPlacement } from './walls';
+import { wallConflicts } from './walls';
 import { bestAutoMove, distanceField } from './path';
 import { applyAction } from './game';
 
@@ -36,16 +36,57 @@ function distOf(
   return field[p.pos.y][p.pos.x];
 }
 
+/** Minimum goal distance among `seat`'s opponents for the given wall set. */
+function minOppDist(
+  walls: ReadonlySet<string>,
+  players: readonly PlayerState[],
+  seat: number,
+  cache: Map<Edge, number[][]>,
+): number {
+  let oppDist = Infinity;
+  for (const p of players) {
+    if (p.seat !== seat) oppDist = Math.min(oppDist, distOf(walls, p, cache));
+  }
+  return oppDist;
+}
+
 /** Margin from `seat`'s perspective: closest opponent's distance minus ours. */
 function margin(state: GameState, seat: number): number {
   const walls = wallSetOf(state.walls);
   const cache = new Map<Edge, number[][]>();
   const myDist = distOf(walls, state.players[seat], cache);
-  let oppDist = Infinity;
-  for (const p of state.players) {
-    if (p.seat !== seat) oppDist = Math.min(oppDist, distOf(walls, p, cache));
+  return minOppDist(walls, state.players, seat, cache) - myDist;
+}
+
+/**
+ * Every wall slot the current rules allow on top of `walls`, with each
+ * player's goal distance after the wall (`dists[seat]`). Iteration order
+ * ('h' then 'v', y outer, x inner) is part of the contract: candidates()
+ * feeds a stable sort and bestDefensiveWall keeps the first best on a strict
+ * greater-than, so insertion order is behavior. A wall trapping any player is
+ * skipped — distanceField marks unreachable cells Infinity and both BFS
+ * ignore pawns, so `dist === Infinity` is exactly checkWallPlacement's
+ * WALL_BLOCKS_PATH rule (the callers pre-guard wallsLeft, and the loop bounds
+ * make out-of-bounds impossible).
+ */
+function* legalWalls(
+  state: GameState,
+  walls: ReadonlySet<string>,
+): Generator<{ wall: Wall; dists: number[] }> {
+  for (const o of ['h', 'v'] as const) {
+    for (let y = 0; y < WALL_GRID; y++) {
+      for (let x = 0; x < WALL_GRID; x++) {
+        const wall = { x, y, o };
+        if (wallConflicts(walls, wall)) continue;
+        const withWall = new Set(walls);
+        withWall.add(wallKey(wall));
+        const cache = new Map<Edge, number[][]>();
+        const dists = state.players.map((p) => distOf(withWall, p, cache));
+        if (dists.some((d) => d === Infinity)) continue;
+        yield { wall, dists };
+      }
+    }
   }
-  return oppDist - myDist;
 }
 
 /** Flat cost for spending a fence — keeps bots from burning walls on +1 detours. */
@@ -64,10 +105,7 @@ function candidates(state: GameState, seat: number): Candidate[] {
   const myField = distanceField(walls, me.goal);
   cache.set(me.goal, myField);
   const myDist = myField[me.pos.y][me.pos.x];
-  let oppDist = Infinity;
-  for (const p of state.players) {
-    if (p.seat !== seat) oppDist = Math.min(oppDist, distOf(walls, p, cache));
-  }
+  const oppDist = minOppDist(walls, state.players, seat, cache);
 
   const out: Candidate[] = [];
   for (const m of getLegalMoves(state, seat)) {
@@ -78,25 +116,15 @@ function candidates(state: GameState, seat: number): Candidate[] {
   // pawn move at all (a pawn-boxed bot with fences in hand may not pass).
   const considerWalls = me.wallsLeft > 0 && (out.length === 0 || oppDist <= myDist + 2);
   if (considerWalls) {
-    for (const o of ['h', 'v'] as const) {
-      for (let y = 0; y < WALL_GRID; y++) {
-        for (let x = 0; x < WALL_GRID; x++) {
-          const wall = { x, y, o };
-          if (!checkWallPlacement(state, wall, seat).legal) continue;
-          const withWall = new Set(walls);
-          withWall.add(wallKey(wall));
-          const wallCache = new Map<Edge, number[][]>();
-          const newMyDist = distOf(withWall, me, wallCache);
-          let newOppDist = Infinity;
-          for (const p of state.players) {
-            if (p.seat !== seat) newOppDist = Math.min(newOppDist, distOf(withWall, p, wallCache));
-          }
-          out.push({
-            action: { type: 'wall', wall },
-            score: newOppDist - newMyDist - WALL_SPEND_COST,
-          });
-        }
+    for (const { wall, dists } of legalWalls(state, walls)) {
+      let newOppDist = Infinity;
+      for (const p of state.players) {
+        if (p.seat !== seat) newOppDist = Math.min(newOppDist, dists[p.seat]);
       }
+      out.push({
+        action: { type: 'wall', wall },
+        score: newOppDist - dists[seat] - WALL_SPEND_COST,
+      });
     }
   }
   return out;
@@ -135,23 +163,14 @@ function bestDefensiveWall(state: GameState, seat: number): Action | null {
 
   let best: Action | null = null;
   let bestScore = -Infinity;
-  for (const o of ['h', 'v'] as const) {
-    for (let y = 0; y < WALL_GRID; y++) {
-      for (let x = 0; x < WALL_GRID; x++) {
-        const wall = { x, y, o };
-        if (!checkWallPlacement(state, wall, seat).legal) continue;
-        const withWall = new Set(walls);
-        withWall.add(wallKey(wall));
-        const wallCache = new Map<Edge, number[][]>();
-        let minThreat = Infinity;
-        for (const t of threats) minThreat = Math.min(minThreat, distOf(withWall, t, wallCache));
-        if (minThreat <= 1) continue; // doesn't defuse the threat
-        const score = minThreat * 100 - distOf(withWall, me, wallCache);
-        if (score > bestScore) {
-          bestScore = score;
-          best = { type: 'wall', wall };
-        }
-      }
+  for (const { wall, dists } of legalWalls(state, walls)) {
+    let minThreat = Infinity;
+    for (const t of threats) minThreat = Math.min(minThreat, dists[t.seat]);
+    if (minThreat <= 1) continue; // doesn't defuse the threat
+    const score = minThreat * 100 - dists[seat];
+    if (score > bestScore) {
+      bestScore = score;
+      best = { type: 'wall', wall };
     }
   }
   return best;
@@ -185,10 +204,14 @@ export function chooseBotAction(
       stuck.sort(byScore);
       return stuck[0].action;
     }
-    // Wander sometimes — but never backwards, and never on every-3rd turn
-    // (the forced-progress beat guarantees termination even under degenerate
-    // rngs that would otherwise make the bot shuffle forever).
-    const mayWander = state.turnSeq % 3 !== 0 && rng() < 0.25;
+    // Wander sometimes — but never backwards, and never on every 3rd of the
+    // bot's OWN turns (the forced-progress beat guarantees termination even
+    // under degenerate rngs that would otherwise make the bot shuffle
+    // forever). turnSeq advances by 1 per accepted action round-robin, so
+    // floor(turnSeq / numPlayers) increments once per own turn; the old
+    // global `turnSeq % 3` made the residue constant per seat in 3-player
+    // games — seat 0 never wandered, seats 1/2 were never forced.
+    const mayWander = Math.floor(state.turnSeq / state.players.length) % 3 !== 0 && rng() < 0.25;
     if (mayWander && moves.length > 1) {
       const walls = wallSetOf(state.walls);
       const field = distanceField(walls, me.goal);
@@ -223,6 +246,14 @@ export function chooseBotAction(
       const res = applyAction(state, c.action);
       if (!res.ok) continue;
       let val: number;
+      // Unreachable today: the immediate-win check at the top of
+      // chooseBotAction returns any goal-landing move before the look-ahead,
+      // and wall/pass actions can never finish a game. Kept deliberately —
+      // the else-branch below reads a 'finished' state after the opponent's
+      // reply as a LOSS (-Infinity); without this guard, a future reordering
+      // of the immediate-win check would make the bot score its own winning
+      // move as -Infinity.
+      /* v8 ignore next 3 */
       if (res.state.status === 'finished') {
         val = Infinity;
       } else {

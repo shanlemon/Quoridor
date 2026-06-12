@@ -2,15 +2,13 @@ import {
   actionToNotation,
   applyAction,
   checkWallPlacement,
+  createGame,
   getLegalMoves,
 } from '@quori/engine';
 import type { Action, Cell, GameState, Wall, WallCheck } from '@quori/engine';
 import type { GameEventWire, SeatInfo, Snapshot } from '@quori/protocol';
-import type { ControllerEvents, HistoryEntry } from './controller';
-
-type Handler<T> = (e: T) => void;
-
-const DEFAULT_WALLS: Record<number, number> = { 2: 10, 3: 7, 4: 5 };
+import mitt from 'mitt';
+import type { ControllerEvents, HistoryEntry, SeatMeta } from './controller';
 
 /**
  * Drop-in replacement for the local GameController, backed by the server.
@@ -30,8 +28,7 @@ export class NetworkController {
   initialWalls = 10;
   startedAt = Date.now();
 
-  private handlers: { [K in keyof ControllerEvents]?: Handler<ControllerEvents[K]>[] } = {};
-  private seatsHandlers: Array<() => void> = [];
+  private readonly emitter = mitt<ControllerEvents>();
 
   constructor(
     snapshot: Snapshot,
@@ -47,7 +44,8 @@ export class NetworkController {
     this.seats = snap.seats;
     this.mySeat = snap.yourSeat;
     this.timerSeconds = snap.config.timerSeconds;
-    this.initialWalls = DEFAULT_WALLS[snap.config.seats] ?? 10;
+    // Same wall budget the server used when it called createGame(seats).
+    this.initialWalls = createGame(snap.config.seats).players[0].wallsLeft;
     if (snap.state.turnSeq === 0) this.startedAt = Date.now();
   }
 
@@ -83,7 +81,7 @@ export class NetworkController {
         return;
       case 'seats':
         this.seats = ev.seats;
-        for (const h of this.seatsHandlers) h();
+        this.emitter.emit('seatsChanged');
         return;
     }
   }
@@ -114,17 +112,20 @@ export class NetworkController {
 
   // ----------------------------------------------------------- emitter
 
-  on<K extends keyof ControllerEvents>(ev: K, h: Handler<ControllerEvents[K]>): void {
-    const list = (this.handlers[ev] ??= []) as Handler<ControllerEvents[K]>[];
-    list.push(h);
+  on<K extends keyof ControllerEvents>(ev: K, h: (e: ControllerEvents[K]) => void): void {
+    this.emitter.on(ev, h);
   }
 
   onSeatsChanged(h: () => void): void {
-    this.seatsHandlers.push(h);
+    this.emitter.on('seatsChanged', h);
+  }
+
+  removeAllListeners(): void {
+    this.emitter.all.clear();
   }
 
   private emit<K extends keyof ControllerEvents>(ev: K, payload: ControllerEvents[K]): void {
-    for (const h of this.handlers[ev] ?? []) h(payload);
+    this.emitter.emit(ev, payload);
   }
 
   // ----------------------------------------------------------- intents out
@@ -142,6 +143,9 @@ export class NetworkController {
   }
 
   checkWall(wall: Wall): WallCheck {
+    // Game over: the fence ghost must never render green; NO_WALLS_LEFT is the
+    // least-wrong existing reason since the WallCheck union is public API.
+    if (this.state.status !== 'playing') return { legal: false, reason: 'NO_WALLS_LEFT', trapped: [] };
     return checkWallPlacement(this.state, wall);
   }
 
@@ -161,7 +165,7 @@ export class NetworkController {
     return this.seats[this.state.current]?.name ?? null;
   }
 
-  seatMeta(seat: number): { label: string | null; bot: boolean; connected: boolean; you: boolean } {
+  seatMeta(seat: number): SeatMeta {
     const info = this.seats[seat];
     return {
       label: info ? info.name : null,
@@ -172,7 +176,6 @@ export class NetworkController {
   }
 
   destroy(): void {
-    this.handlers = {};
-    this.seatsHandlers = [];
+    this.removeAllListeners();
   }
 }

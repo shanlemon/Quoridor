@@ -18,15 +18,12 @@ import type {
   Wall,
   WallCheck,
 } from '@quori/engine';
+import type { HistoryEntryWire } from '@quori/protocol';
+import mitt from 'mitt';
 
-export interface HistoryEntry {
-  seat: number;
-  notation: string;
-  kind: Action['type'];
-  auto: boolean;
-}
+export type HistoryEntry = HistoryEntryWire;
 
-export interface ControllerEvents {
+export type ControllerEvents = {
   moved: { seat: number; from: Cell; to: Cell; auto: boolean };
   wallPlaced: { seat: number; wall: Wall };
   passed: { seat: number };
@@ -34,9 +31,11 @@ export interface ControllerEvents {
   finished: { winner: number };
   turn: { seat: number };
   timer: { secondsLeft: number };
-}
+  /** Payload-less; only emitted by NetworkController. */
+  seatsChanged: undefined;
+};
 
-type Handler<T> = (e: T) => void;
+export type SeatMeta = { label: string | null; bot: boolean; connected: boolean; you: boolean };
 
 /**
  * Owns the authoritative local GameState, the turn timer, and bot turns. The
@@ -57,7 +56,7 @@ export class GameController {
   private secondsLeft = 0;
   private began = false;
   private paused = false;
-  private handlers: { [K in keyof ControllerEvents]?: Handler<ControllerEvents[K]>[] } = {};
+  private readonly emitter = mitt<ControllerEvents>();
 
   constructor(
     numPlayers: PlayerCount,
@@ -125,17 +124,20 @@ export class GameController {
     return null; // local games label players by character
   }
 
-  seatMeta(seat: number): { label: string | null; bot: boolean; connected: boolean; you: boolean } {
+  seatMeta(seat: number): SeatMeta {
     return { label: null, bot: this.isBot(seat), connected: true, you: false };
   }
 
-  on<K extends keyof ControllerEvents>(ev: K, h: Handler<ControllerEvents[K]>): void {
-    const list = (this.handlers[ev] ??= []) as Handler<ControllerEvents[K]>[];
-    list.push(h);
+  on<K extends keyof ControllerEvents>(ev: K, h: (e: ControllerEvents[K]) => void): void {
+    this.emitter.on(ev, h);
+  }
+
+  removeAllListeners(): void {
+    this.emitter.all.clear();
   }
 
   private emit<K extends keyof ControllerEvents>(ev: K, payload: ControllerEvents[K]): void {
-    for (const h of this.handlers[ev] ?? []) h(payload);
+    this.emitter.emit(ev, payload);
   }
 
   dispatch(action: Action, auto = false): boolean {
@@ -174,6 +176,9 @@ export class GameController {
   }
 
   checkWall(wall: Wall): WallCheck {
+    // Game over: the fence ghost must never render green; NO_WALLS_LEFT is the
+    // least-wrong existing reason since the WallCheck union is public API.
+    if (this.state.status !== 'playing') return { legal: false, reason: 'NO_WALLS_LEFT', trapped: [] };
     return checkWallPlacement(this.state, wall);
   }
 
@@ -254,6 +259,6 @@ export class GameController {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.stopTimer();
     this.stopBot();
-    this.handlers = {};
+    this.removeAllListeners();
   }
 }
