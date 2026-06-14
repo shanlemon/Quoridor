@@ -13,7 +13,9 @@ export class Hud {
 
   renderPlayers(c: PlayController, timerLeft: number | null): void {
     const state = c.state;
-    $('players-panel').innerHTML = state.players
+    const panel = $('players-panel');
+    panel.dataset.count = String(state.players.length);
+    panel.innerHTML = state.players
       .map((p) => {
         const meta = CHARACTER_META[p.character];
         const seatMeta = c.seatMeta(p.seat);
@@ -41,10 +43,10 @@ export class Hud {
         <div class="player-card ${active ? 'active' : ''} ${winner ? 'winner' : ''}" style="--pc:${meta.colorCss}">
           <div class="avatar" style="--pc:${meta.colorCss}40">${meta.emoji}</div>
           <div class="pinfo">
-            <div class="pname">${meta.name} ${badges} <span class="goal-hint">${meta.icon}</span></div>
+            <div class="pname">${meta.name} ${badges} <span class="goal-hint char-icon">${meta.icon}</span></div>
             ${owner}
-            <div class="goal-hint">home: ${GOAL_ARROWS[p.goal]} ${p.goal}</div>
-            <div class="fences">${fences}</div>
+            <div class="goal-hint home-hint">home: ${GOAL_ARROWS[p.goal]} ${p.goal}</div>
+            <div class="fences" data-count="${p.wallsLeft}">${fences}</div>
           </div>
           ${timer}${winner ? '<span>👑</span>' : ''}
         </div>`;
@@ -74,11 +76,13 @@ export class Hud {
       return;
     }
     if (mode === 'move') {
-      status.textContent = `${meta.emoji} ${meta.name}'s turn — tap a glowing dot to hop!`;
+      status.textContent = this.coarse
+        ? `${meta.emoji} ${meta.name}: tap a dot to hop`
+        : `${meta.emoji} ${meta.name}'s turn — tap a glowing dot to hop!`;
     } else {
       status.textContent = this.coarse
-        ? `${meta.emoji} ${meta.name}'s turn — tap between cells to preview a fence, tap again to build it`
-        : `${meta.emoji} ${meta.name}'s turn — click between cells to build a fence (right-click cancels)`;
+        ? `${meta.emoji} ${meta.name}: tap board, then Place Fence`
+        : `${meta.emoji} ${meta.name}'s turn - click the board to preview, then Place Fence`;
     }
   }
 

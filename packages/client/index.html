@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <meta name="color-scheme" content="light" />
     <title>Quori Quest 🌸</title>
   </head>
@@ -27,6 +27,10 @@
             <button id="btn-mode-wall" class="pill mode-pill" aria-pressed="false">
               🪵 Fence <span id="wall-count" class="count-chip"></span>
             </button>
+          </div>
+          <div id="wall-action-row" hidden>
+            <button id="btn-rotate-wall" class="pill rotate-wall-btn" disabled>Rotate</button>
+            <button id="btn-place-wall" class="pill place-wall-btn" disabled>Tap board to preview</button>
           </div>
         </section>
         <aside id="history-panel">

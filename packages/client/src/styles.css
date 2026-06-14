@@ -16,7 +16,9 @@
 html,
 body {
   margin: 0;
+  width: 100%;
   height: 100%;
+  min-height: 100%;
 }
 
 body {
@@ -27,6 +29,10 @@ body {
   color: var(--ink);
   font-family: 'Comic Sans MS', 'Comic Sans', 'Chalkboard SE', 'Segoe UI', system-ui, sans-serif;
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #app {
@@ -34,6 +40,11 @@ body {
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
+  padding:
+    env(safe-area-inset-top)
+    env(safe-area-inset-right)
+    env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
 }
 
 /* ---------- top bar ---------- */
@@ -71,6 +82,8 @@ body {
   font-size: 1.1rem;
   width: 42px;
   height: 42px;
+  min-width: 42px;
+  min-height: 42px;
   border-radius: 14px;
   border: 2px solid var(--line);
   background: var(--card);
@@ -117,8 +130,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* keep taps fast (no double-tap zoom) now that page zoom is allowed */
-  touch-action: manipulation;
+  /* keep taps fast and let the Pixi canvas receive board gestures */
+  touch-action: none;
 }
 
 #board-container canvas {
@@ -127,10 +140,80 @@ body {
   border-radius: var(--radius);
 }
 
+.board-camera-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.board-camera-controls button {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  background: rgba(255, 253, 247, 0.94);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(91, 74, 63, 0.14);
+}
+
+.board-camera-controls button:active {
+  transform: translateY(1px);
+}
+
 #mode-bar {
   display: flex;
   gap: 10px;
   padding: 8px 0 2px;
+}
+
+#wall-action-row {
+  display: flex;
+  gap: 8px;
+  width: min(100%, 360px);
+  padding: 6px 0 2px;
+}
+
+#wall-action-row[hidden] {
+  display: none;
+}
+
+.rotate-wall-btn {
+  flex: 0 0 112px;
+  background: rgba(255, 253, 247, 0.96);
+  border-color: var(--line);
+  font-weight: 700;
+}
+
+.place-wall-btn {
+  flex: 1 1 auto;
+  width: 100%;
+  border-color: #72c97b;
+  background: #e7f8df;
+  color: #3f7442;
+  font-weight: 700;
+  box-shadow: 0 3px 0 rgba(98, 166, 92, 0.28);
+}
+
+.place-wall-btn:not(:disabled) {
+  background: linear-gradient(135deg, #95e489, #67c96f);
+  border-color: #56b85e;
+  color: #fff;
+}
+
+.place-wall-btn:disabled {
+  cursor: default;
+  opacity: 0.68;
+  box-shadow: none;
 }
 
 #history-panel {
@@ -175,6 +258,7 @@ body {
   border: 2px solid var(--line);
   border-radius: 999px;
   padding: 8px 18px;
+  min-height: 42px;
   cursor: pointer;
   transition:
     transform 0.12s ease,
@@ -215,6 +299,7 @@ body {
   border: none;
   border-radius: 999px;
   padding: 14px 34px;
+  min-height: 48px;
   cursor: pointer;
   box-shadow: 0 4px 0 #d96695;
   transition: transform 0.12s ease;
@@ -398,6 +483,7 @@ body {
   border: 2px solid var(--line);
   border-radius: 999px;
   padding: 9px 18px;
+  min-height: 42px;
   outline: none;
   max-width: 240px;
 }
@@ -426,6 +512,7 @@ body {
   /* it's a <button> now — match the previous span rendering inside the h3 */
   font: inherit;
   color: inherit;
+  min-height: 34px;
 }
 
 .error-hint {
@@ -584,8 +671,14 @@ body {
 
 /* ---------- mobile ---------- */
 @media (max-width: 860px) {
+  #topbar {
+    gap: 6px;
+    padding: 6px 8px 4px;
+  }
+
   #main {
     flex-direction: column;
+    gap: 6px;
     padding: 0 8px 8px;
   }
 
@@ -595,34 +688,129 @@ body {
     overflow-x: auto;
     justify-content: flex-start;
     padding: 2px;
+    gap: 7px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #players-panel::-webkit-scrollbar {
+    display: none;
+  }
+
+  #players-panel[data-count='2'] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
   }
 
   .player-card {
     padding: 6px 8px;
     flex-shrink: 0;
+    min-width: 132px;
+    max-width: 172px;
+    border-radius: 16px;
+  }
+
+  #players-panel[data-count='2'] .player-card {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .player-card .avatar {
+    width: 34px;
+    height: 34px;
+    font-size: 1.12rem;
   }
 
   .player-card .pname {
     font-size: 0.8rem;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .fences {
-    max-width: 70px;
+    display: inline-flex;
+    max-width: none;
+    margin-top: 1px;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
   }
 
   .fence-chip {
-    width: 10px;
-    height: 6px;
+    display: none;
+  }
+
+  .fences::before {
+    content: '🪵 ' attr(data-count);
+  }
+
+  #board-section {
+    flex: 1 1 auto;
+    min-height: 0;
+    justify-content: flex-start;
+  }
+
+  #board-container {
+    flex: 0 1 auto;
+    height: min(50dvh, 430px);
+    min-height: 330px;
+    max-height: calc(100dvh - 244px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  #mode-bar {
+    width: 100%;
+    justify-content: center;
+    gap: 8px;
+    padding: 4px 0 0;
+  }
+
+  #wall-action-row {
+    width: 100%;
+    padding-top: 5px;
+  }
+
+  .rotate-wall-btn {
+    flex-basis: 104px;
+  }
+
+  #mode-bar .pill {
+    flex: 1 1 0;
+    max-width: 180px;
+    padding: 9px 10px;
+    font-size: 0.95rem;
+  }
+
+  .place-wall-btn {
+    min-height: 46px;
+    font-size: 0.95rem;
+  }
+
+  .board-camera-controls {
+    top: 8px;
+    right: 8px;
+    gap: 5px;
+  }
+
+  .board-camera-controls button {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    border-width: 1.5px;
+    font-size: 0.88rem;
   }
 
   /* on small screens the open history panel floats as a bottom sheet
      instead of squeezing the column layout */
   #history-panel.open {
     position: fixed;
-    right: 10px;
-    bottom: 10px;
-    width: min(70vw, 240px);
-    max-height: 40vh;
+    left: max(10px, env(safe-area-inset-left));
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: min(42vh, 280px);
     z-index: 40;
     box-shadow: 0 8px 30px rgba(91, 74, 63, 0.3);
   }
@@ -632,6 +820,202 @@ body {
   }
 
   #status-text {
-    font-size: 0.85rem;
+    font-size: 0.78rem;
+    line-height: 1.2;
+    padding: 7px 10px;
+    min-width: 0;
+  }
+
+  #topbar-buttons {
+    gap: 4px;
+  }
+
+  .icon-btn {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    border-radius: 12px;
+  }
+
+  .card {
+    width: min(94vw, 480px);
+    max-height: min(92dvh, 760px);
+    padding: 22px 18px;
+    border-radius: 22px;
+  }
+
+  .pill-row {
+    gap: 8px;
+  }
+
+  .pill {
+    padding: 9px 14px;
+  }
+
+  .seat-row {
+    gap: 8px;
+    max-width: 100%;
+  }
+
+  .seat-row .pill {
+    min-width: 116px;
+  }
+
+  #toast {
+    top: calc(58px + env(safe-area-inset-top));
+    max-width: 92vw;
+    text-align: center;
+  }
+}
+
+@media (max-width: 860px) and (orientation: landscape) {
+  #topbar {
+    padding-top: 6px;
+    padding-bottom: 4px;
+  }
+
+  #main {
+    display: grid;
+    grid-template-columns: minmax(116px, 18vw) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 6px 8px;
+  }
+
+  #players-panel {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    width: 100%;
+    height: 100%;
+    justify-content: flex-start;
+  }
+
+  .player-card {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+    gap: 7px;
+  }
+
+  .player-card .avatar {
+    width: 34px;
+    height: 34px;
+    font-size: 1.1rem;
+  }
+
+  .player-card .goal-hint {
+    display: none;
+  }
+
+  #board-section {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  #board-container {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+
+  #mode-bar {
+    width: min(42vw, 300px);
+    align-self: flex-end;
+  }
+
+  #wall-action-row {
+    width: min(42vw, 300px);
+    align-self: flex-end;
+  }
+
+  #mode-bar .pill {
+    background: rgba(255, 253, 247, 0.92);
+    box-shadow: 0 4px 18px rgba(91, 74, 63, 0.18);
+  }
+}
+
+@media (max-width: 520px) and (orientation: portrait) {
+  #topbar {
+    align-items: stretch;
+    min-height: 44px;
+  }
+
+  #status-text {
+    text-align: left;
+    display: flex;
+    align-items: center;
+    border-width: 1.5px;
+    border-radius: 22px;
+  }
+
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 1rem;
+    border-width: 1.5px;
+  }
+
+  #players-panel {
+    min-height: 58px;
+  }
+
+  .player-card {
+    min-width: 126px;
+    max-width: 162px;
+    gap: 7px;
+    padding: 5px 7px;
+    border-width: 1.5px;
+  }
+
+  .player-card.active {
+    box-shadow: inset 4px 0 0 var(--pc, var(--accent)), 0 0 0 1px var(--pc, var(--accent));
+    transform: none;
+  }
+
+  .player-card .avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 1rem;
+  }
+
+  .player-card .goal-hint:not(.home-hint):not(.char-icon) {
+    display: none;
+  }
+
+  .player-card .home-hint {
+    font-size: 0.62rem;
+    white-space: nowrap;
+  }
+
+  .timer-badge {
+    font-size: 0.74rem;
+    padding: 2px 7px;
+  }
+
+  #board-container {
+    height: min(45dvh, 390px);
+    min-height: 320px;
+    max-height: calc(100dvh - 262px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+
+  #mode-bar .pill {
+    font-size: 0.88rem;
+    min-height: 46px;
+    border-width: 1.5px;
+  }
+
+  .rotate-wall-btn {
+    flex-basis: 92px;
+  }
+
+  .count-chip {
+    padding: 0 7px;
+    margin-left: 2px;
   }
 }

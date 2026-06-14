@@ -31,6 +31,10 @@ const TILE_DEPTH = 12;
 const WALL_H = 30;
 const FENCE_DROP = 44; // px the fence drops from when placed
 const SHADOW_INK = 0x4d3a2a; // shared ground-shadow color
+const MAX_ZOOM = 2.4;
+const MIN_PAN_DRAG = 8;
+const FENCE_TOUCH_RADIUS = 68;
+const FENCE_MOUSE_RADIUS = 28;
 
 function iso(u: number, v: number, z = 0): { x: number; y: number } {
   return { x: (u - v) * KX, y: (u + v) * KY - z };
@@ -80,6 +84,7 @@ export interface BoardHooks {
   onMoveTap(cell: Cell): void;
   onWallConfirm(wall: Wall): void;
   checkWall(wall: Wall): WallCheck;
+  onWallPreviewChange?(wall: Wall | null, check: WallCheck | null): void;
   /** Tap confirmed an invalid ghost — show feedback. */
   onInvalidWallConfirm(check: WallCheck): void;
   /** Right-click / ESC equivalent from the canvas. */
@@ -108,10 +113,6 @@ interface Particle {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
-}
-
-function sameWall(a: Wall, b: Wall): boolean {
-  return a.x === b.x && a.y === b.y && a.o === b.o;
 }
 
 export class BoardView {
@@ -143,6 +144,21 @@ export class BoardView {
   private resizeObs!: ResizeObserver;
   private destroyed = false;
   private readonly small = window.matchMedia('(max-width: 860px)').matches;
+  private viewportW = 1;
+  private viewportH = 1;
+  private fitScale = 1;
+  private userZoom = 1;
+  private pan = { x: 0, y: 0 };
+  private activePointers = new Map<number, { x: number; y: number }>();
+  private dragPointer: number | null = null;
+  private dragStart: { x: number; y: number; panX: number; panY: number } | null = null;
+  private didPan = false;
+  private lastPanAt = 0;
+  private pinch:
+    | { contentX: number; contentY: number; startDistance: number; startZoom: number }
+    | null = null;
+  private cameraControls: HTMLDivElement | null = null;
+  private readonly onCanvasWheel = (e: WheelEvent) => this.onWheel(e);
 
   private constructor(
     private host: HTMLElement,
@@ -179,12 +195,18 @@ export class BoardView {
     // input
     this.app.stage.eventMode = 'static';
     this.app.stage.hitArea = this.app.screen;
+    this.app.stage.on('pointerdown', (e: FederatedPointerEvent) => this.onPointerDown(e));
     this.app.stage.on('pointermove', (e: FederatedPointerEvent) => this.onPointerMove(e));
+    this.app.stage.on('pointerup', (e: FederatedPointerEvent) => this.onPointerUp(e));
+    this.app.stage.on('pointerupoutside', (e: FederatedPointerEvent) => this.onPointerUp(e));
+    this.app.stage.on('pointercancel', (e: FederatedPointerEvent) => this.onPointerUp(e));
     this.app.stage.on('pointertap', (e: FederatedPointerEvent) => this.onPointerTap(e));
+    this.app.canvas.addEventListener('wheel', this.onCanvasWheel, { passive: false });
     this.app.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.hooks.onCancel();
     });
+    this.mountCameraControls();
 
     this.app.ticker.add((ticker) => this.tick(ticker.deltaMS));
 
@@ -197,12 +219,93 @@ export class BoardView {
 
   private layout(): void {
     if (this.destroyed) return;
-    const w = Math.max(1, this.host.clientWidth);
-    const h = Math.max(1, this.host.clientHeight);
-    this.app.renderer.resize(w, h);
-    const scale = Math.min(w / ISO_W, h / ISO_H);
+    this.viewportW = Math.max(1, this.host.clientWidth);
+    this.viewportH = Math.max(1, this.host.clientHeight);
+    this.app.renderer.resize(this.viewportW, this.viewportH);
+    this.fitScale = Math.min(this.viewportW / ISO_W, this.viewportH / ISO_H);
+    this.clampPan();
+    this.applyCamera();
+  }
+
+  private basePosition(zoom = this.userZoom): { x: number; y: number } {
+    const scale = this.fitScale * zoom;
+    return {
+      x: (this.viewportW - ISO_W * scale) / 2,
+      y: (this.viewportH - ISO_H * scale) / 2,
+    };
+  }
+
+  private clampPan(): void {
+    const scale = this.fitScale * this.userZoom;
+    const rangeX = Math.max(0, (ISO_W * scale - this.viewportW) / 2);
+    const rangeY = Math.max(0, (ISO_H * scale - this.viewportH) / 2);
+    this.pan.x = clamp(this.pan.x, -rangeX, rangeX);
+    this.pan.y = clamp(this.pan.y, -rangeY, rangeY);
+  }
+
+  private applyCamera(shakeX = 0, shakeY = 0): void {
+    const scale = this.fitScale * this.userZoom;
+    const base = this.basePosition();
     this.world.scale.set(scale);
-    this.world.position.set((w - ISO_W * scale) / 2, (h - ISO_H * scale) / 2);
+    this.world.position.set(base.x + this.pan.x + shakeX, base.y + this.pan.y + shakeY);
+  }
+
+  private zoomAt(anchor: { x: number; y: number }, nextZoom: number): void {
+    const clampedZoom = clamp(nextZoom, 1, MAX_ZOOM);
+    const oldScale = this.fitScale * this.userZoom;
+    const oldBase = this.basePosition();
+    const contentX = (anchor.x - oldBase.x - this.pan.x) / oldScale;
+    const contentY = (anchor.y - oldBase.y - this.pan.y) / oldScale;
+
+    this.userZoom = clampedZoom;
+    const newScale = this.fitScale * this.userZoom;
+    const newBase = this.basePosition();
+    this.pan.x = anchor.x - newBase.x - contentX * newScale;
+    this.pan.y = anchor.y - newBase.y - contentY * newScale;
+    this.clampPan();
+    this.applyCamera();
+  }
+
+  private zoomBy(factor: number, anchor = { x: this.viewportW / 2, y: this.viewportH / 2 }): void {
+    this.zoomAt(anchor, this.userZoom * factor);
+  }
+
+  private resetCamera(): void {
+    this.userZoom = 1;
+    this.pan.x = 0;
+    this.pan.y = 0;
+    this.applyCamera();
+  }
+
+  private mountCameraControls(): void {
+    const controls = document.createElement('div');
+    controls.className = 'board-camera-controls';
+    controls.setAttribute('aria-label', 'Board zoom controls');
+
+    const addButton = (label: string, title: string, onClick: () => void): void => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.title = title;
+      btn.setAttribute('aria-label', title);
+      btn.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick();
+      });
+      controls.appendChild(btn);
+    };
+
+    addButton('+', 'Zoom in', () => this.zoomBy(1.25));
+    addButton('-', 'Zoom out', () => this.zoomBy(1 / 1.25));
+    addButton('1x', 'Reset board view', () => this.resetCamera());
+
+    this.host.appendChild(controls);
+    this.cameraControls = controls;
   }
 
   /** Cell center in board units. */
@@ -423,17 +526,36 @@ export class BoardView {
 
   clearGhost(): void {
     this.ghost = null;
+    this.ghostLayer.position.set(0, 0);
     this.ghostLayer.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    this.hooks.onWallPreviewChange?.(null, null);
   }
 
   private showGhost(slot: Wall): void {
     const check = this.hooks.checkWall(slot);
     this.ghost = slot;
     this.ghostLayer.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    const halo = this.buildGhostHalo(slot, check.legal);
     const fence = this.buildFence(slot);
     fence.alpha = 0.75;
     fence.tint = check.legal ? 0x8be08b : 0xff8080;
-    this.ghostLayer.addChild(fence);
+    this.ghostLayer.addChild(halo, fence);
+    this.hooks.onWallPreviewChange?.(slot, check);
+  }
+
+  private buildGhostHalo(w: Wall, legal: boolean): Graphics {
+    const center = this.wallU(w);
+    const len = CELL * 2 + GAP;
+    const pad = this.small ? 34 : 22;
+    const color = legal ? 0x60c96d : 0xff6c80;
+    const poly =
+      w.o === 'h'
+        ? rectPoly(center.u - len / 2, center.v - pad, center.u + len / 2, center.v + pad, 3)
+        : rectPoly(center.u - pad, center.v - len / 2, center.u + pad, center.v + len / 2, 3);
+    return new Graphics()
+      .poly(poly)
+      .fill({ color, alpha: this.small ? 0.28 : 0.18 })
+      .stroke({ width: this.small ? 5 : 3, color, alpha: 0.75 });
   }
 
   // ---------- fences ----------
@@ -709,12 +831,9 @@ export class BoardView {
     const t = this.elapsed;
 
     if (this.shakeAmp > 0.05) {
-      const w = Math.max(1, this.host.clientWidth);
-      const h = Math.max(1, this.host.clientHeight);
-      const scale = Math.min(w / ISO_W, h / ISO_H);
-      this.world.position.set(
-        (w - ISO_W * scale) / 2 + (Math.random() - 0.5) * 2 * this.shakeAmp,
-        (h - ISO_H * scale) / 2 + (Math.random() - 0.5) * 2 * this.shakeAmp,
+      this.applyCamera(
+        (Math.random() - 0.5) * 2 * this.shakeAmp,
+        (Math.random() - 0.5) * 2 * this.shakeAmp,
       );
     }
 
@@ -768,7 +887,118 @@ export class BoardView {
 
   // ---------- input ----------
 
-  /** Pointer → board units via the inverse isometric projection. */
+  /** Camera gestures run before board move/fence input. */
+  private onPointerDown(e: FederatedPointerEvent): void {
+    if (e.button > 0) return;
+    const id = e.pointerId ?? 1;
+    this.activePointers.set(id, { x: e.global.x, y: e.global.y });
+
+    if (this.activePointers.size >= 2) {
+      const snap = this.pinchSnapshot();
+      if (snap) {
+        this.beginPinch(snap);
+        this.didPan = true;
+        this.lastPanAt = performance.now();
+      }
+      this.dragPointer = null;
+      this.dragStart = null;
+      return;
+    }
+
+    this.dragPointer = id;
+    this.dragStart = { x: e.global.x, y: e.global.y, panX: this.pan.x, panY: this.pan.y };
+    this.didPan = false;
+    this.pinch = null;
+  }
+
+  private onPointerUp(e: FederatedPointerEvent): void {
+    const id = e.pointerId ?? 1;
+    this.activePointers.delete(id);
+    if (this.didPan) this.lastPanAt = performance.now();
+    this.pinch = null;
+
+    if (this.activePointers.size === 1) {
+      const [nextId, point] = [...this.activePointers.entries()][0];
+      this.dragPointer = nextId;
+      this.dragStart = { x: point.x, y: point.y, panX: this.pan.x, panY: this.pan.y };
+      this.didPan = false;
+      return;
+    }
+
+    this.dragPointer = null;
+    this.dragStart = null;
+  }
+
+  private onWheel(e: WheelEvent): void {
+    e.preventDefault();
+    const rect = this.app.canvas.getBoundingClientRect();
+    this.zoomBy(Math.exp(-e.deltaY * 0.0015), {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    });
+  }
+
+  private pinchSnapshot(): { center: { x: number; y: number }; distance: number } | null {
+    const points = [...this.activePointers.values()];
+    if (points.length < 2) return null;
+    const [a, b] = points;
+    return {
+      center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+    };
+  }
+
+  private beginPinch(snap: { center: { x: number; y: number }; distance: number }): void {
+    const scale = this.fitScale * this.userZoom;
+    const base = this.basePosition();
+    this.pinch = {
+      contentX: (snap.center.x - base.x - this.pan.x) / scale,
+      contentY: (snap.center.y - base.y - this.pan.y) / scale,
+      startDistance: snap.distance,
+      startZoom: this.userZoom,
+    };
+  }
+
+  private handleCameraGesture(e: FederatedPointerEvent): boolean {
+    const id = e.pointerId ?? 1;
+    if (this.activePointers.has(id)) this.activePointers.set(id, { x: e.global.x, y: e.global.y });
+
+    if (this.activePointers.size >= 2) {
+      const snap = this.pinchSnapshot();
+      if (!snap) return false;
+      if (!this.pinch) this.beginPinch(snap);
+      if (!this.pinch) return false;
+
+      this.userZoom = clamp(this.pinch.startZoom * (snap.distance / this.pinch.startDistance), 1, MAX_ZOOM);
+      const scale = this.fitScale * this.userZoom;
+      const base = this.basePosition();
+      this.pan.x = snap.center.x - base.x - this.pinch.contentX * scale;
+      this.pan.y = snap.center.y - base.y - this.pinch.contentY * scale;
+      this.clampPan();
+      this.applyCamera();
+      this.didPan = true;
+      this.lastPanAt = performance.now();
+      return true;
+    }
+
+    if (this.dragStart && this.dragPointer === id) {
+      const dx = e.global.x - this.dragStart.x;
+      const dy = e.global.y - this.dragStart.y;
+      if (this.didPan || Math.hypot(dx, dy) >= MIN_PAN_DRAG) {
+        this.pan.x = this.dragStart.panX + dx;
+        this.pan.y = this.dragStart.panY + dy;
+        this.clampPan();
+        this.applyCamera();
+        this.didPan = true;
+        this.lastPanAt = performance.now();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /** Pointer -> board units via the inverse isometric projection. */
   private toBoardUnits(e: FederatedPointerEvent): { u: number; v: number } {
     const p = this.isoRoot.toLocal(e.global);
     return unIso(p.x, p.y);
@@ -784,7 +1014,39 @@ export class BoardView {
     return { x, y };
   }
 
-  private slotAt(p: { u: number; v: number }): Wall | null {
+  private slotDistance(p: { u: number; v: number }, w: Wall): number {
+    const center = this.wallU(w);
+    const len = CELL * 2 + GAP;
+    const nearest =
+      w.o === 'h'
+        ? { u: clamp(p.u, center.u - len / 2, center.u + len / 2), v: center.v }
+        : { u: center.u, v: clamp(p.v, center.v - len / 2, center.v + len / 2) };
+    return Math.hypot(p.u - nearest.u, p.v - nearest.v);
+  }
+
+  private nearestSlotAt(p: { u: number; v: number }, radius: number): Wall | null {
+    let best: Wall | null = null;
+    let bestDist = Infinity;
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        for (const o of ['h', 'v'] as const) {
+          const wall = { x, y, o };
+          const dist = this.slotDistance(p, wall);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = wall;
+          }
+        }
+      }
+    }
+    return best && bestDist <= radius ? best : null;
+  }
+
+  private slotAt(p: { u: number; v: number }, forgiving = false): Wall | null {
+    const nearest = this.nearestSlotAt(p, forgiving ? FENCE_TOUCH_RADIUS : FENCE_MOUSE_RADIUS);
+    if (nearest) return nearest;
+    if (forgiving) return null;
+
     const rx = p.u - MARGIN;
     const ry = p.v - MARGIN;
     const span = CELL * 9 + GAP * 8;
@@ -800,43 +1062,27 @@ export class BoardView {
   }
 
   private onPointerMove(e: FederatedPointerEvent): void {
-    if (this.busy || this.mode !== 'wall') return;
-    if (e.pointerType === 'touch') return; // touch: tap-to-preview, tap-again-to-confirm
-    const slot = this.slotAt(this.toBoardUnits(e));
-    if (!slot) {
-      this.clearGhost();
-      return;
-    }
-    if (!this.ghost || !sameWall(this.ghost, slot)) this.showGhost(slot);
+    if (this.handleCameraGesture(e)) return;
   }
 
   private onPointerTap(e: FederatedPointerEvent): void {
     if (this.busy) return;
     if (e.button > 0) return; // right/middle click must never move or build
+    if (performance.now() - this.lastPanAt < 220) return;
     const local = this.toBoardUnits(e);
     if (this.mode === 'move') {
       const cell = this.cellAt(local);
       if (cell) this.hooks.onMoveTap(cell);
       return;
     }
-    const slot = this.slotAt(local);
+    const slot = this.slotAt(local, e.pointerType === 'touch');
     if (!slot) return;
-    if (this.ghost && sameWall(this.ghost, slot)) {
-      const check = this.hooks.checkWall(slot);
-      if (check.legal) {
-        this.hooks.onWallConfirm(slot);
-      } else {
-        this.hooks.onInvalidWallConfirm(check);
-        this.wiggleGhost();
-      }
-    } else {
-      this.showGhost(slot);
-    }
+    this.showGhost(slot);
   }
 
   private wiggleGhost(): void {
-    const ghost = this.ghostLayer.children[0];
-    if (!ghost) return;
+    const ghost = this.ghostLayer;
+    if (ghost.children.length === 0) return;
     const baseX = ghost.position.x;
     void animate(220, (k) => {
       if (ghost.destroyed) return; // ghost may be cleared mid-wiggle (ESC, mode switch)
@@ -848,11 +1094,41 @@ export class BoardView {
     return this.busy;
   }
 
+  hasWallPreview(): boolean {
+    return this.ghost !== null;
+  }
+
+  rotateWallPreview(): boolean {
+    if (this.busy || this.mode !== 'wall' || !this.ghost) return false;
+    this.showGhost({
+      ...this.ghost,
+      o: this.ghost.o === 'h' ? 'v' : 'h',
+    });
+    return true;
+  }
+
+  confirmWallPreview(): boolean {
+    if (this.busy || this.mode !== 'wall' || !this.ghost) return false;
+    const slot = this.ghost;
+    const check = this.hooks.checkWall(slot);
+    if (!check.legal) {
+      this.hooks.onInvalidWallConfirm(check);
+      this.wiggleGhost();
+      this.hooks.onWallPreviewChange?.(slot, check);
+      return false;
+    }
+    this.hooks.onWallConfirm(slot);
+    return true;
+  }
+
   destroy(): void {
     // Drain the module-global tween registry first: pending tweens would
     // otherwise be ticked by the NEXT board against destroyed objects.
     clearAnimations();
     this.destroyed = true;
+    this.app.canvas.removeEventListener('wheel', this.onCanvasWheel);
+    this.cameraControls?.remove();
+    this.cameraControls = null;
     this.resizeObs.disconnect();
     this.app.destroy({ removeView: true }, { children: true, texture: true });
   }

@@ -50,6 +50,14 @@ function tone(opts: ToneOpts): void {
 }
 
 export const sfx = {
+  /** Light mobile haptics where supported. */
+  vibrate(pattern: number | number[]): void {
+    try {
+      navigator.vibrate?.(pattern);
+    } catch {
+      // Some browsers expose the API but reject it outside user gestures.
+    }
+  },
   /** Boingy pawn hop. */
   hop(): void {
     tone({ freq: 320, to: 640, dur: 0.13 });

@@ -1,6 +1,6 @@
 import './styles.css';
 import { CHARACTERS, getLegalWallSlots } from '@quori/engine';
-import type { ActionError, BotLevel, PlayerCount } from '@quori/engine';
+import type { ActionError, BotLevel, PlayerCount, WallCheck } from '@quori/engine';
 import type { RoomConfig } from '@quori/protocol';
 import { BoardView } from './board-view';
 import type { BoardMode } from './board-view';
@@ -16,10 +16,18 @@ import { sfx } from './sfx';
 
 export type PlayController = GameController | NetworkController;
 
+interface WallPreviewUiState {
+  readonly active: boolean;
+  readonly legal: boolean;
+}
+
+const NO_WALL_PREVIEW: WallPreviewUiState = { active: false, legal: false };
+
 const hud = new Hud();
 let controller: PlayController | null = null;
 let board: BoardView | null = null;
 let mode: BoardMode = 'move';
+let wallPreview: WallPreviewUiState = NO_WALL_PREVIEW;
 let timerLeft: number | null = null;
 let online: OnlineSession | null = null;
 /** Last markup written to #lobby-config — skip rewrites (and focus loss) on roster-only broadcasts. */
@@ -60,11 +68,36 @@ function refresh(): void {
   hud.renderPlayers(controller, state.status === 'playing' && controller.lockKind() !== 'bot' ? timerLeft : null);
   hud.updateStatus(state, mode, controller.lockKind(), controller.currentActorName());
   hud.updateModeBar(state, mode, locked);
+  syncWallActionButton();
   hud.renderHistory(controller);
   board.setActiveSeat(state.status === 'playing' ? state.current : null);
   const dots = state.status === 'playing' && !locked && mode === 'move' ? controller.legalMoves() : [];
   board.setHighlights(dots, CHARACTER_META[state.players[state.current].character].color);
   maybeAutoPass();
+}
+
+function syncWallActionButton(): void {
+  const row = $('wall-action-row');
+  const btn = $('btn-place-wall') as HTMLButtonElement;
+  const rotateBtn = $('btn-rotate-wall') as HTMLButtonElement;
+  const show = mode === 'wall' && !!controller && controller.state.status === 'playing' && !controller.inputLocked();
+  row.hidden = !show;
+  btn.disabled = !show || !wallPreview.active || !wallPreview.legal;
+  rotateBtn.disabled = !show || !wallPreview.active;
+  btn.textContent = !wallPreview.active
+    ? 'Tap board to preview'
+    : wallPreview.legal
+      ? 'Place Fence'
+      : 'Blocked spot';
+}
+
+function resetWallPreview(): void {
+  wallPreview = NO_WALL_PREVIEW;
+}
+
+function setWallPreviewFromCheck(check: WallCheck | null): void {
+  wallPreview = check ? { active: true, legal: check.legal } : NO_WALL_PREVIEW;
+  syncWallActionButton();
 }
 
 /**
@@ -107,8 +140,37 @@ function setMode(next: BoardMode): void {
   }
   if (mode !== next) sfx.pick();
   mode = next;
+  resetWallPreview();
   board.setMode(next);
   refresh();
+}
+
+function placeWallPreview(): void {
+  if (!controller || !board) return;
+  if (mode !== 'wall') return;
+  if (!wallPreview.active) {
+    hud.toast('Tap the board to preview a fence first.');
+    sfx.vibrate(18);
+    return;
+  }
+  if (!wallPreview.legal) {
+    sfx.bonk();
+    sfx.vibrate([24, 18, 24]);
+    hud.toast('That fence spot is blocked.');
+    return;
+  }
+  board.confirmWallPreview();
+  syncWallActionButton();
+}
+
+function rotateWallPreview(): void {
+  if (!board || mode !== 'wall') return;
+  if (!wallPreview.active) {
+    hud.toast('Tap the board to preview a fence first.');
+    sfx.vibrate(18);
+    return;
+  }
+  board.rotateWallPreview();
 }
 
 function wireController(c: PlayController): void {
@@ -120,6 +182,7 @@ function wireController(c: PlayController): void {
   c.on('moved', ({ seat, from, to, auto }) => {
     enqueue(myGen, async () => {
       sfx.hop();
+      sfx.vibrate(12);
       if (auto) {
         const meta = CHARACTER_META[c.state.players[seat].character];
         hud.toast(`⏱ Time's up — ${meta.name} ${meta.emoji} hops ahead automatically!`);
@@ -133,6 +196,7 @@ function wireController(c: PlayController): void {
   c.on('wallPlaced', ({ wall }) => {
     enqueue(myGen, async () => {
       sfx.thunk();
+      sfx.vibrate([12, 18, 18]);
       board?.setLastMove(null);
       await board?.animateWall(wall);
       refresh();
@@ -149,6 +213,7 @@ function wireController(c: PlayController): void {
   c.on('invalid', ({ error }) => {
     if (gen !== myGen) return;
     sfx.bonk();
+    sfx.vibrate([24, 18, 24]);
     hud.toast(hud.errorMessage(error));
   });
 
@@ -161,7 +226,9 @@ function wireController(c: PlayController): void {
       (c.inputLocked() || c.state.players[c.state.current].wallsLeft === 0)
     ) {
       mode = 'move';
+      resetWallPreview();
       board?.setMode('move');
+      syncWallActionButton();
     }
     if (c.kind === 'online') refresh();
   });
@@ -177,6 +244,7 @@ function wireController(c: PlayController): void {
   c.on('finished', ({ winner }) => {
     enqueue(myGen, async () => {
       sfx.fanfare();
+      sfx.vibrate([20, 30, 20, 30, 40]);
       mode = 'move';
       refresh();
       await board?.celebrateWin(winner);
@@ -207,6 +275,7 @@ async function mountGame(c: PlayController): Promise<void> {
   controller = c;
   timerLeft = c.timerSeconds > 0 ? c.timerSeconds : null;
   mode = 'move';
+  resetWallPreview();
 
   const host = $('board-container');
   host.querySelectorAll('canvas').forEach((cv) => cv.remove());
@@ -222,11 +291,21 @@ async function mountGame(c: PlayController): Promise<void> {
       if (c.inputLocked()) return;
       c.dispatch({ type: 'wall', wall });
       mode = 'move';
+      resetWallPreview();
       board?.setMode('move');
+      syncWallActionButton();
     },
     checkWall: (wall) => c.checkWall(wall),
+    onWallPreviewChange: (_wall, check) => {
+      if (check) {
+        sfx.pick();
+        sfx.vibrate(check.legal ? 8 : [18, 14, 18]);
+      }
+      setWallPreviewFromCheck(check);
+    },
     onInvalidWallConfirm: (check) => {
       sfx.bonk();
+      sfx.vibrate([24, 18, 24]);
       hud.toast(hud.wallErrorMessage(check, c.state));
     },
     onCancel: () => setMode('move'),
@@ -547,6 +626,8 @@ function initSetup(): void {
 function initTopbar(): void {
   $('btn-mode-move').addEventListener('click', () => setMode('move'));
   $('btn-mode-wall').addEventListener('click', () => setMode('wall'));
+  $('btn-rotate-wall').addEventListener('click', () => rotateWallPreview());
+  $('btn-place-wall').addEventListener('click', () => placeWallPreview());
   $('btn-help').addEventListener('click', () => {
     showHelp();
     syncPause();
